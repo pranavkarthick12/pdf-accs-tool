@@ -227,9 +227,23 @@ class MCIDStructureReferenceRule(BaseRule):
 
         # Check for orphan page MCIDs
         orphan_pages = []
+        pt_map = doc.parent_tree_map
         for p in doc.pages:
             referenced = tree_mcids_by_page.get(p.page_number, set())
-            orphans = [mcid for mcid in p.mcids if mcid not in referenced and mcid not in global_unassigned_mcids]
+            sp_id = p.struct_parents_id
+            pt_entry = pt_map.get(sp_id, []) if sp_id is not None else []
+            orphans = []
+            for mcid in p.mcids:
+                if mcid in referenced or mcid in global_unassigned_mcids:
+                    continue
+                # Also verify if the MCID is associated with a valid structure element via /ParentTree (ISO 14289-1 7.1)
+                has_pt_struct = False
+                if isinstance(pt_entry, list) and mcid < len(pt_entry):
+                    target = pt_entry[mcid]
+                    if isinstance(target, dict) and target.get("tag") and target.get("tag").lower() != "artifact":
+                        has_pt_struct = True
+                if not has_pt_struct:
+                    orphans.append(mcid)
             if orphans:
                 orphan_pages.append((p.page_number, orphans))
 

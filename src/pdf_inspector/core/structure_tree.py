@@ -423,15 +423,6 @@ class StructureTreeParser:
 
                 target_obj_num = getattr(target, "objgen", (None, None))[0] if hasattr(target, "objgen") else None
                 node = nodes_by_obj.get(target_obj_num)
-                if not node and isinstance(target, pikepdf.Dictionary):
-                    # Check parent /P to find closest ancestor present in the structure tree
-                    p = target.get("/P")
-                    while p is not None:
-                        p_num = getattr(p, "objgen", (None, None))[0] if hasattr(p, "objgen") else None
-                        if p_num in nodes_by_obj:
-                            node = nodes_by_obj[p_num]
-                            break
-                        p = p.get("/P") if isinstance(p, pikepdf.Dictionary) else None
 
                 if node:
                     if mcid_int not in node.mcids:

@@ -457,22 +457,38 @@ def test_pac_parity_pdf04_syntax():
 
 @pytest.mark.skipif(not os.path.exists(PDF10_PDF), reason="PDF10.pdf not found in Downloads")
 def test_pac_parity_pdf10_marked_content():
-    """Verifies that PDF10 evaluates verified marked-content sequences and figure bounding boxes."""
+    """
+    Verifies that PDF10 evaluates verified marked-content sequences and figure bounding boxes.
+    - Page content streams contain exactly 661 marked-content sequences (BDC ... EMC with /MCID).
+    - ParentTree contains 668 non-null entries across pages (661 referenced + 7 unreferenced slots).
+    - Unreferenced ParentTree entries are not injected into PageModel.mcids.
+    - Exactly 3 Figure elements lack bounding box geometry (node_257, node_329, node_657).
+    """
     from src.pdf_inspector.engine.wcag.wcag_rules import WCAGAdaptableRule
 
     doc = DocumentParser(PDF10_PDF).parse()
     assert doc is not None
-    total_mcids = sum(len(p.mcids) for p in doc.pages)
-    assert total_mcids == 668
 
+    # 1. Genuine content-stream MCIDs across all 12 pages
+    total_stream_mcids = sum(len(p.mcids) for p in doc.pages)
+    assert total_stream_mcids == 661
+
+    # 2. Structural ParentTree non-null entries across pages (661 stream + 7 unreferenced slots)
+    total_pt_entries = sum(
+        len([x for x in doc.parent_tree_map.get(p.struct_parents_id, []) if x is not None])
+        for p in doc.pages if p.struct_parents_id is not None
+    )
+    assert total_pt_entries == 668
+
+    # 3. WCAG SC 1.3.1 Adaptable evaluation
     rule = WCAGAdaptableRule()
     results = rule.evaluate(doc)
     passed_items = sum(r.items_count for r in results if r.status == CheckStatus.PASS)
+    assert passed_items >= 661
 
-    assert passed_items >= 668
-    # Verifies detection of the 4 Figure elements lacking bounding boxes
+    # 4. Verifies detection of the 3 Figure elements lacking bounding boxes
     fig_fails = [r for r in results if "Figure" in r.message and r.status == CheckStatus.FAIL]
-    assert len(fig_fails) == 4
+    assert len(fig_fails) == 3
 
 
 def test_form_xobject_syntax_validation_rule():

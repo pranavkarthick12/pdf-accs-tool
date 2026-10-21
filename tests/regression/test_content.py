@@ -302,4 +302,74 @@ class TestContentRegression:
         assert any("refers to MCID 0, but /ParentTree points to obj 200" in r.message for r in fails)
         assert any("not a valid structure element (tag: 'Artifact')" in r.message for r in fails)
 
+    def test_parent_tree_supplementary_elements_valid(self):
+        """
+        Tests that valid supplementary structure elements referenced via /ParentTree
+        (such as localized footer tags or supplementary elements not in /K of StructTreeRoot)
+        are recognized as valid and do not trigger false-positive Matterhorn 01-005 or 01-008 failures.
+        """
+        from src.pdf_inspector.engine.pdf_ua.parent_tree_rules import ParentTreeIntegrityRule
+        from src.pdf_inspector.engine.pdf_ua.content_rules import MCIDStructureReferenceRule
 
+        # StructTreeRoot -> Document (obj 100) -> Paragraph (obj 101, MCID 0)
+        p_node = StructureNode("p1", "P", "P", page=1, obj_num=101, mcids=[0], mcid_entries=[(0, 1)])
+        doc_node = StructureNode("doc1", "Document", "Document", page=1, obj_num=100, children=[p_node])
+        root = StructureNode("root", "StructTreeRoot", "StructTreeRoot", obj_num=99, children=[doc_node])
+
+        # Page 1 contains MCIDs [0, 1]. MCID 1 is associated with supplementary element obj 150 in ParentTree.
+        page1 = PageModel(page_number=1, width=600, height=800, struct_parents_id=0, mcids=[0, 1])
+
+        # ParentTree:
+        # Index 0: Points to obj 101 (matches p_node.obj_num 101)
+        # Index 1: Supplementary element obj 150 (tag 'P', parent_obj_num 100)
+        pt_map = {
+            0: [
+                {"obj_num": 101, "tag": "P", "type": "StructElem", "has_parent": True, "parent_obj_num": 100},
+                {"obj_num": 150, "tag": "P", "type": "StructElem", "has_parent": True, "parent_obj_num": 100}
+            ]
+        }
+        doc = PDFDocumentModel(
+            filepath="", filename="pt_supplementary.pdf", filesize=100, pdf_version="1.7",
+            page_count=1, is_tagged=True, structure_tree=root, pages=[page1],
+            has_parent_tree=True, parent_tree_valid=True, parent_tree_entries_count=1,
+            parent_tree_map=pt_map
+        )
+
+        # 1. ParentTreeIntegrityRule: must NOT report corrupt/orphan entry for obj 150
+        pt_rule = ParentTreeIntegrityRule()
+        pt_res = pt_rule.evaluate(doc)
+        pt_fails = [r for r in pt_res if r.status == CheckStatus.FAIL]
+        assert len(pt_fails) == 0
+
+        # 2. MCIDStructureReferenceRule: must recognize MCID 1 has valid structure element via ParentTree
+        mcid_rule = MCIDStructureReferenceRule()
+        mcid_res = mcid_rule.evaluate(doc)
+        mcid_fails = [r for r in mcid_res if r.status == CheckStatus.FAIL]
+        assert len(mcid_fails) == 0
+
+    def test_parent_tree_detached_corrupt_entry(self):
+        """Tests that detached ParentTree entries (missing /P and not StructTreeRoot) fail Matterhorn 01-008."""
+        from src.pdf_inspector.engine.pdf_ua.parent_tree_rules import ParentTreeIntegrityRule
+
+        node = StructureNode("p1", "P", "P", page=1, obj_num=101, mcids=[0], mcid_entries=[(0, 1)])
+        root = StructureNode("root", "StructTreeRoot", "StructTreeRoot", obj_num=99, children=[node])
+        page1 = PageModel(page_number=1, width=600, height=800, struct_parents_id=0, mcids=[0, 1])
+
+        # Index 1 has no parent (/P missing) and is not StructTreeRoot -> detached
+        pt_map = {
+            0: [
+                {"obj_num": 101, "tag": "P", "type": "StructElem", "has_parent": True, "parent_obj_num": 99},
+                {"obj_num": 150, "tag": "Span", "type": "StructElem", "has_parent": False, "parent_obj_num": None}
+            ]
+        }
+        doc = PDFDocumentModel(
+            filepath="", filename="pt_detached.pdf", filesize=100, pdf_version="1.7",
+            page_count=1, is_tagged=True, structure_tree=root, pages=[page1],
+            has_parent_tree=True, parent_tree_valid=True, parent_tree_entries_count=1,
+            parent_tree_map=pt_map
+        )
+
+        rule = ParentTreeIntegrityRule()
+        res = rule.evaluate(doc)
+        fails = [r for r in res if r.status == CheckStatus.FAIL]
+        assert any("is not a valid structure element" in r.message and "obj 150" in r.message for r in fails)

@@ -281,15 +281,73 @@ def test_wcag_3_1_language_and_switches():
     assert results[1].status == CheckStatus.PASS and "fr-FR" in results[1].message
 
 
-def test_wcag_1_4_distinguishable_manual_review():
-    """Q. WCAG 1.4 requires visual contrast verification (MANUAL_REVIEW)."""
+def test_wcag_1_4_distinguishable_empty_not_applicable():
+    """Empty or untagged documents without text content return empty list (renders as '- | - | -' in UI)."""
     doc = PDFDocumentModel(
-        filepath="", filename="distinguishable.pdf", filesize=100, pdf_version="1.7",
-        page_count=1, is_tagged=True
+        filepath="", filename="empty.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=False
     )
     rule = WCAGDistinguishableRule()
     results = rule.evaluate(doc)
-    assert len(results) == 1
-    assert results[0].status == CheckStatus.MANUAL_REVIEW
-    assert "visual color contrast" in results[0].message.lower()
+    assert results == []
 
+
+def test_wcag_1_4_distinguishable_valid_contrast_pass():
+    """Text with compliant contrast against background returns CheckStatus.PASS."""
+    p1 = PageModel(
+        page_number=1, width=612, height=792,
+        text="Compliant Black on White Text",
+        text_spans=[
+            {"text": "Compliant Black on White Text", "color": (0, 0, 0), "bg_color": (255, 255, 255), "size": 12.0}
+        ]
+    )
+    doc = PDFDocumentModel(
+        filepath="", filename="compliant.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=True, pages=[p1]
+    )
+    rule = WCAGDistinguishableRule()
+    results = rule.evaluate(doc)
+    assert any(r.status == CheckStatus.PASS for r in results)
+    assert not any(r.status == CheckStatus.FAIL for r in results)
+
+
+def test_wcag_1_4_distinguishable_low_contrast_fail():
+    """Text with low contrast (< 4.5:1 standard) produces CheckStatus.FAIL with diagnostics."""
+    p1 = PageModel(
+        page_number=1, width=612, height=792,
+        text="Light Gray Text",
+        text_spans=[
+            {"text": "Light Gray Text", "color": (180, 180, 180), "bg_color": (255, 255, 255), "size": 11.0}
+        ]
+    )
+    doc = PDFDocumentModel(
+        filepath="", filename="low_contrast.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=True, pages=[p1]
+    )
+    rule = WCAGDistinguishableRule()
+    results = rule.evaluate(doc)
+    fail_results = [r for r in results if r.status == CheckStatus.FAIL]
+    assert len(fail_results) >= 1
+    assert "insufficient contrast" in fail_results[0].message.lower()
+    assert fail_results[0].page == 1
+
+
+def test_wcag_1_4_distinguishable_large_text_threshold():
+    """Large text (18pt+ or 14pt+ bold) uses 3.0:1 threshold instead of 4.5:1."""
+    # Color #767676 on white has contrast ~4.54:1 (passes 4.5:1).
+    # Color #888888 on white has contrast ~3.54:1 (fails 4.5:1, but passes 3.0:1 large text threshold).
+    p1 = PageModel(
+        page_number=1, width=612, height=792,
+        text="Large Heading",
+        text_spans=[
+            {"text": "Large Heading", "color": (136, 136, 136), "bg_color": (255, 255, 255), "size": 18.0, "is_bold": False}
+        ]
+    )
+    doc = PDFDocumentModel(
+        filepath="", filename="large_text.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=True, pages=[p1]
+    )
+    rule = WCAGDistinguishableRule()
+    results = rule.evaluate(doc)
+    assert any(r.status == CheckStatus.PASS for r in results)
+    assert not any(r.status == CheckStatus.FAIL for r in results)

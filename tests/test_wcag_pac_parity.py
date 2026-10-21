@@ -12,13 +12,31 @@ from src.pdf_inspector.core.document_parser import DocumentParser
 from src.pdf_inspector.engine.runner import AuditRunner
 from src.pdf_inspector.core.models import CheckStatus
 
-MILLER_PDF = r"C:\Users\HBS\Downloads\miller-cacs1e-ch02.02_updated (1).pdf"
-BENCHMARK_58_78 = r"C:\Users\HBS\Downloads\58-78 (2).pdf"
-SF_CHAPTER_16 = r"C:\Users\HBS\Downloads\SF_Chapter 16 202-269.pdf"
-IMPACT_PDF = r"C:\Users\HBS\Downloads\Impact_2e_AmE_L1_Assessment_SampleTest_Key_Student.pdf"
-FORM_940_PDF = r"C:\Users\HBS\Downloads\Form_940_A11y 1.pdf"
-CROSSING_AEGEAN_PDF = r"C:\Users\HBS\Downloads\Crossing_the_Aegean_is_Traumatic_Your_bad_hair_day_isnt_A11y.pdf"
-FRENCH_1A_PDF = r"C:\Users\HBS\Downloads\French 1A_7654-1-17.pdf"
+def _find_benchmark(filename: str) -> str:
+    """Helper to locate benchmark PDFs across local environment paths."""
+    candidates = [
+        os.path.join(r"C:\Users\defaultuser0\Downloads", filename),
+        os.path.join(r"C:\Users\HBS\Downloads", filename),
+        os.path.join(os.path.dirname(__file__), "..", "test_samples", filename),
+        filename
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[0]
+
+
+MILLER_PDF = _find_benchmark("miller-cacs1e-ch02.02_updated (1).pdf")
+BENCHMARK_58_78 = _find_benchmark("58-78 (2).pdf")
+SF_CHAPTER_16 = _find_benchmark("SF_Chapter 16 202-269.pdf")
+IMPACT_PDF = _find_benchmark("Impact_2e_AmE_L1_Assessment_SampleTest_Key_Student.pdf")
+FORM_940_PDF = _find_benchmark("Form_940_A11y 1.pdf")
+CROSSING_AEGEAN_PDF = _find_benchmark("Crossing_the_Aegean_is_Traumatic_Your_bad_hair_day_isnt_A11y.pdf")
+FRENCH_1A_PDF = _find_benchmark("French 1A_7654-1-17.pdf")
+PDF06_PDF = _find_benchmark("PDF06.pdf")
+PDF10_PDF = _find_benchmark("PDF10.pdf")
+PDF07_PDF = _find_benchmark("PDF07.pdf")
+
 
 
 def test_no_filename_hardcoding_in_rules():
@@ -227,4 +245,66 @@ def test_wcag_pac_parity_french_1a():
     assert wcag_counts["1.3 Adaptable"]["failed"] == 289
     assert wcag_counts["2.4 Navigable"]["failed"] == 3
     assert wcag_counts["3.1 Readable"]["failed"] == 1
+    # 1.4 Distinguishable renders as '-' in PAC (0 evaluations)
+    assert wcag_counts.get("1.4 Distinguishable", {}).get("passed", 0) == 0
+    assert wcag_counts.get("1.4 Distinguishable", {}).get("failed", 0) == 0
+
+
+@pytest.mark.skipif(not os.path.exists(PDF06_PDF), reason="PDF06.pdf not found in Downloads")
+def test_wcag_pac_parity_pdf06_distinguishable():
+    """PDF06 is a scanned image document; PAC reports 0 passed, 0 failed ('-') for 1.4 Distinguishable."""
+    doc = DocumentParser(PDF06_PDF).parse()
+    report = AuditRunner().run(doc)
+    wcag_counts = report.get_category_counts("WCAG")
+    dist = wcag_counts.get("1.4 Distinguishable", {})
+    assert dist.get("passed", 0) == 0
+    assert dist.get("failed", 0) == 0
+
+
+@pytest.mark.skipif(not os.path.exists(PDF10_PDF), reason="PDF10.pdf not found in Downloads")
+def test_wcag_pac_parity_pdf10_distinguishable():
+    """PDF10 is an accessible document; PAC reports 6772 passed, 0 failed for 1.4 Distinguishable."""
+    doc = DocumentParser(PDF10_PDF).parse()
+    report = AuditRunner().run(doc)
+    wcag_counts = report.get_category_counts("WCAG")
+    dist = wcag_counts.get("1.4 Distinguishable", {})
+    assert dist.get("passed", 0) == 6772
+    assert dist.get("failed", 0) == 0
+
+
+@pytest.mark.skipif(not os.path.exists(PDF07_PDF), reason="PDF07.pdf not found in Downloads")
+def test_wcag_pac_parity_pdf07_distinguishable():
+    """PDF07 has low contrast text; PAC reports 8487 passed, 401 failed for 1.4 Distinguishable."""
+    doc = DocumentParser(PDF07_PDF).parse()
+    report = AuditRunner().run(doc)
+    wcag_counts = report.get_category_counts("WCAG")
+    dist = wcag_counts.get("1.4 Distinguishable", {})
+    assert dist.get("passed", 0) == 8487
+    assert dist.get("failed", 0) == 401
+    assert dist.get("passed", 0) + dist.get("failed", 0) == 8888
+
+
+def test_wcag_1_4_distinguishable_two_decimal_rounding_boundary():
+    """Verifies that contrast ratios rounding to 4.50:1 (e.g. #FFFFFF on #007CC3, ratio 4.496:1) pass SC 1.4.3 per PAC standard."""
+    from src.pdf_inspector.engine.wcag.wcag_rules import WCAGDistinguishableRule, _contrast_ratio
+    from src.pdf_inspector.core.models import PageModel, PDFDocumentModel
+
+    fg = (255, 255, 255)
+    bg = (0, 124, 195)
+    ratio = _contrast_ratio(fg, bg)
+    assert 4.495 < ratio < 4.50
+    assert round(ratio, 2) == 4.50
+
+    p = PageModel(
+        page_number=1, width=612, height=792, text="Check No.",
+        text_spans=[{"text": "Check No.", "color": fg, "bg_color": bg, "size": 8.0, "is_bold": True}]
+    )
+    doc = PDFDocumentModel(
+        filepath="", filename="rounding.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=True, pages=[p]
+    )
+    rule = WCAGDistinguishableRule()
+    results = rule.evaluate(doc)
+    assert any(r.status == CheckStatus.PASS for r in results)
+    assert not any(r.status == CheckStatus.FAIL for r in results)
 

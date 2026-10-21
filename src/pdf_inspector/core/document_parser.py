@@ -238,17 +238,28 @@ class DocumentParser:
                                     s_tag = str(item.get("/S", "")).strip("/")
                                     t_val = str(item.get("/Type", "")).strip("/")
                                     has_p = bool(item.get("/P"))
-                                    arr.append({"obj_num": og, "tag": s_tag, "type": t_val, "has_parent": has_p})
+                                    p_obj = item.get("/P") if hasattr(item, "get") else None
+                                    p_og = getattr(p_obj, "objgen", (None, None))[0] if hasattr(p_obj, "objgen") else None
+                                    arr.append({
+                                        "obj_num": og,
+                                        "tag": s_tag,
+                                        "type": t_val,
+                                        "has_parent": has_p,
+                                        "parent_obj_num": p_og
+                                    })
                                 else:
-                                    arr.append({"obj_num": None, "tag": str(item), "type": "", "has_parent": False})
+                                    arr.append({"obj_num": None, "tag": str(item), "type": "", "has_parent": False, "parent_obj_num": None})
                             parent_tree_map[sp_id] = arr
                         elif isinstance(val, (pikepdf.Dictionary, dict)):
                             og = getattr(val, "objgen", (None, None))[0] if hasattr(val, "objgen") else None
+                            p_obj = val.get("/P") if hasattr(val, "get") else None
+                            p_og = getattr(p_obj, "objgen", (None, None))[0] if hasattr(p_obj, "objgen") else None
                             parent_tree_map[sp_id] = {
                                 "obj_num": og,
                                 "tag": str(val.get("/S", "")).strip("/"),
                                 "type": str(val.get("/Type", "")).strip("/"),
-                                "has_parent": bool(val.get("/P"))
+                                "has_parent": bool(val.get("/P")),
+                                "parent_obj_num": p_og
                             }
                 except Exception as e:
                     logger.debug(f"Error parsing parent tree: {e}")

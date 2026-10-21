@@ -14,6 +14,7 @@ from src.pdf_inspector.core.models import (
 )
 from src.pdf_inspector.engine.wcag.wcag_rules import (
     WCAGTextAlternativesRule,
+    WCAGDistinguishableRule,
     WCAGNavigableRule,
     WCAGReadableRule,
     WCAGInputAssistanceRule,
@@ -142,3 +143,41 @@ class TestWCAGRegression:
         )
         res_good = rule.evaluate(doc_good)
         assert any(r.status == CheckStatus.PASS for r in res_good)
+
+    def test_wcag_distinguishable_contrast(self):
+        rule = WCAGDistinguishableRule()
+
+        # Case 1: Untagged document with no text -> returns empty list (renders as '- | - | -' in UI)
+        doc_empty = PDFDocumentModel(
+            filepath="", filename="empty.pdf", filesize=100, pdf_version="1.7",
+            page_count=1, is_tagged=False
+        )
+        assert rule.evaluate(doc_empty) == []
+
+        # Case 2: Compliant text (Black on White, ratio 21:1 >= 4.5:1) -> CheckStatus.PASS
+        p_good = PageModel(
+            page_number=1, width=612, height=792, text="Accessible text",
+            text_spans=[{"text": "Accessible text", "color": (0, 0, 0), "bg_color": (255, 255, 255), "size": 12.0}]
+        )
+        doc_good = PDFDocumentModel(
+            filepath="", filename="good.pdf", filesize=100, pdf_version="1.7",
+            page_count=1, is_tagged=True, pages=[p_good]
+        )
+        res_good = rule.evaluate(doc_good)
+        assert any(r.status == CheckStatus.PASS for r in res_good)
+        assert not any(r.status == CheckStatus.FAIL for r in res_good)
+
+        # Case 3: Low contrast text (Light Gray on White, ratio ~1.9:1 < 4.5:1) -> CheckStatus.FAIL with diagnostics
+        p_bad = PageModel(
+            page_number=2, width=612, height=792, text="Faint text",
+            text_spans=[{"text": "Faint text", "color": (200, 200, 200), "bg_color": (255, 255, 255), "size": 11.0}]
+        )
+        doc_bad = PDFDocumentModel(
+            filepath="", filename="bad.pdf", filesize=100, pdf_version="1.7",
+            page_count=2, is_tagged=True, pages=[p_bad]
+        )
+        res_bad = rule.evaluate(doc_bad)
+        fails = [r for r in res_bad if r.status == CheckStatus.FAIL]
+        assert len(fails) >= 1
+        assert fails[0].page == 2
+        assert "insufficient contrast" in fails[0].message.lower()

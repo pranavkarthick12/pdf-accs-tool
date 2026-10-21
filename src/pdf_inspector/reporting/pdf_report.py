@@ -216,6 +216,7 @@ class PDFReportGenerator:
 
         wcag_counts = report.get_category_counts("WCAG")
         for idx, (cat, counts) in enumerate(wcag_counts.items()):
+            sec_label = "<b>WCAG 2.1</b><br/><font color='#64748b'>PAC Matrix</font>" if idx == 0 else ""
             p_c = counts['passed']
             w_c = counts['warned']
             f_c = counts['failed']

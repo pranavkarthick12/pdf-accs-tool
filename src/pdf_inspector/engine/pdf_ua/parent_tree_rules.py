@@ -162,8 +162,13 @@ class ParentTreeIntegrityRule(BaseRule):
                                 og = target.get("obj_num")
                                 s_tag = target.get("tag", "")
                                 is_artifact = s_tag.lower() == "artifact"
-                                is_orphan_obj = bool(og and og != 0 and all_tree_objs and og not in all_tree_objs)
-                                if is_artifact or is_orphan_obj:
+                                has_parent = target.get("has_parent", True)
+                                is_in_tree = (og and og in all_tree_objs) or any(
+                                    mcid in n.mcids and (n.standard_tag or n.tag) == s_tag
+                                    for n in all_tree_nodes
+                                )
+                                is_detached = not is_in_tree and not has_parent and s_tag != "StructTreeRoot"
+                                if is_artifact or is_detached or not s_tag:
                                     invalid_pt_entries.append((p.page_number, mcid, og, s_tag))
 
         if invalid_pt_entries:

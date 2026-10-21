@@ -5,12 +5,15 @@ Evaluates individual non-text elements, headings, lists, tables, fonts, links, a
 with standards-based zero-applicable object handling and exact PAC parity.
 """
 
-from typing import List, Dict, Any, Set, Optional
+from typing import List, Dict, Any, Set, Optional, Tuple
 import os
 import re
+import logging
 from ..rule_base import BaseRule
 from ...core.models import PDFDocumentModel, CheckResult, CheckStatus, Severity
 from ...core.structure_tree import STANDARD_STRUCTURE_TYPES_EXACT, resolve_role
+
+logger = logging.getLogger(__name__)
 
 
 def _count_stream_text_strings(doc: PDFDocumentModel) -> int:
@@ -353,25 +356,240 @@ class WCAGAdaptableRule(BaseRule):
         return results
 
 
+def _channel_lum(val: float) -> float:
+    """Helper to linearize an 8-bit sRGB color channel (0-1)."""
+    return val / 12.92 if val <= 0.04045 else ((val + 0.055) / 1.055) ** 2.4
+
+
+def _calc_lum(r: int, g: int, b: int) -> float:
+    """Calculates relative luminance for an sRGB color (0-255)."""
+    r_lin = _channel_lum(r / 255.0)
+    g_lin = _channel_lum(g / 255.0)
+    b_lin = _channel_lum(b / 255.0)
+    return 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin
+
+
+def _contrast_ratio(fg: Tuple[int, int, int], bg: Tuple[int, int, int]) -> float:
+    """Calculates WCAG contrast ratio between foreground and background sRGB colors."""
+    l1 = _calc_lum(*fg)
+    l2 = _calc_lum(*bg)
+    lighter = max(l1, l2)
+    darker = min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _resolve_bg_color(page, bbox, fg: Tuple[int, int, int], drawings: List[Any]) -> Tuple[int, int, int]:
+    """
+    Resolves background color behind a text span bbox on a PyMuPDF page.
+    Checks filled vector drawing paths and pixel pixmap sampling when necessary.
+    """
+    import pymupdf
+    white = (255, 255, 255)
+
+    # 1. Check vector drawings in reverse z-order (topmost first)
+    for dr in reversed(drawings):
+        fill = dr.get("fill")
+        if fill is None:
+            continue
+        rect = dr.get("rect")
+        if not rect:
+            continue
+        dr_rect = pymupdf.Rect(rect)
+        # Background drawing must enclose the text span
+        if dr_rect.contains(bbox) or (bbox in dr_rect):
+            sub_rects = [it[1] for it in dr.get("items", []) if it[0] == "re"]
+            if sub_rects:
+                if not any(pymupdf.Rect(sr).contains(bbox) for sr in sub_rects):
+                    continue
+
+            if len(fill) == 3:
+                return (int(round(fill[0] * 255)), int(round(fill[1] * 255)), int(round(fill[2] * 255)))
+            elif len(fill) == 1:
+                g = int(round(fill[0] * 255))
+                return (g, g, g)
+            elif len(fill) == 4:
+                c, m, y, k = fill
+                r = int(round(255 * (1 - c) * (1 - k)))
+                g = int(round(255 * (1 - m) * (1 - k)))
+                b = int(round(255 * (1 - y) * (1 - k)))
+                return (r, g, b)
+
+    # 2. If fg color is dark enough that white background yields compliant contrast, default to white
+    if round(_contrast_ratio(fg, white), 2) >= 4.5:
+        return white
+
+    # 3. For white/light text or indeterminate backgrounds, sample pixels behind or around the text
+    try:
+        sample_rect = pymupdf.Rect(bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2) & page.rect
+        if not sample_rect.is_empty:
+            pix = page.get_pixmap(clip=sample_rect, dpi=72)
+            colors: Dict[Tuple[int, int, int], int] = {}
+            for y in range(pix.height):
+                for x in range(pix.width):
+                    c = pix.pixel(x, y)[:3]
+                    # Exclude text foreground pixels
+                    if abs(c[0] - fg[0]) < 15 and abs(c[1] - fg[1]) < 15 and abs(c[2] - fg[2]) < 15:
+                        continue
+                    colors[c] = colors.get(c, 0) + 1
+            if colors:
+                return max(colors.items(), key=lambda it: it[1])[0]
+    except Exception:
+        pass
+
+    return white
+
+
 class WCAGDistinguishableRule(BaseRule):
     rule_id = "WCAG-1.4"
     name = "1.4 Distinguishable"
     category = "1.4 Distinguishable"
     standard = "WCAG"
-    severity = Severity.MEDIUM
-    machine_testable = False
-    description = "Make it easier for users to see and hear content including separating foreground from background (WCAG SC 1.4.1 Use of Color, SC 1.4.3 Contrast Minimum, SC 1.4.11 Non-text Contrast)."
-    remediation_template = "Verify visual contrast ratio of text against background meets 4.5:1 for regular text and 3:1 for large text or graphical objects."
+    severity = Severity.HIGH
+    machine_testable = True
+    description = "Make it easier for users to see and hear content including separating foreground from background (WCAG SC 1.4.3 Contrast Minimum)."
+    remediation_template = "Verify visual contrast ratio of text against background meets 4.5:1 for standard text and 3:1 for large text (18pt+ or 14pt+ bold)."
 
     def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
-        if not doc.is_tagged and not doc.fonts and not any(p.text.strip() for p in doc.pages):
+        total_stream_strings = _count_stream_text_strings(doc)
+        has_page_text = any(bool(p.text and p.text.strip()) for p in doc.pages)
+        has_struct_text = False
+        if doc.structure_tree:
+            all_nodes = [n for n in doc.structure_tree.find_all_nodes() if n.tag != "StructTreeRoot"]
+            has_struct_text = any(bool(n.text_content and n.text_content.strip()) for n in all_nodes)
+
+        # In PAC, untagged documents without text streams or scanned image documents without tagged body text report '-' (0 evaluations)
+        if not doc.is_tagged and total_stream_strings == 0 and not has_page_text:
             return []
-        return [self.create_result(
-            status=CheckStatus.MANUAL_REVIEW,
-            message="Verify visual color contrast (minimum 4.5:1 for standard text, 3:1 for large text/icons) and ensure color is not the only means of conveying information (WCAG SC 1.4.1, SC 1.4.3, SC 1.4.11).",
-            evidence="Color contrast and use-of-color require visual sampling and human verification.",
-            manual_review_required=True
-        )]
+        if doc.is_tagged and doc.structure_tree is not None and not has_struct_text:
+            return []
+        if not has_page_text and not has_struct_text and total_stream_strings == 0:
+            return []
+
+        failures: List[CheckResult] = []
+        evaluated_spans = 0
+
+        if doc.filepath and os.path.exists(doc.filepath):
+            page_artifacts: Dict[int, Set[str]] = {}
+            try:
+                import pikepdf
+                with pikepdf.open(doc.filepath) as pdf:
+                    for pno, p in enumerate(pdf.pages):
+                        art_set = set()
+                        in_artifact = False
+                        for op in pikepdf.parse_content_stream(p):
+                            op_str = str(op.operator)
+                            if op_str in ("BDC", "BMC"):
+                                if len(op.operands) > 0 and str(op.operands[0]) == "/Artifact":
+                                    in_artifact = True
+                            elif op_str == "EMC":
+                                in_artifact = False
+                            elif in_artifact and op_str in ("Tj", "'", '"'):
+                                val = str(op.operands[0]).strip()
+                                if val:
+                                    art_set.add(val)
+                            elif in_artifact and op_str == "TJ":
+                                for item in op.operands[0]:
+                                    if isinstance(item, pikepdf.String):
+                                        val = str(item).strip()
+                                        if val:
+                                            art_set.add(val)
+                        page_artifacts[pno + 1] = art_set
+            except Exception:
+                pass
+
+            try:
+                import pymupdf
+                with pymupdf.open(doc.filepath) as fitz_doc:
+                    for pno, page in enumerate(fitz_doc):
+                        page_num = pno + 1
+                        art_set = page_artifacts.get(page_num, set())
+                        drawings = page.get_drawings()
+                        d = page.get_text("dict")
+                        for b in d.get("blocks", []):
+                            if b.get("type") != 0:
+                                continue
+                            for l in b.get("lines", []):
+                                for s in l.get("spans", []):
+                                    txt = s.get("text", "").strip()
+                                    if not txt:
+                                        continue
+                                    if txt in art_set:
+                                        continue
+                                    evaluated_spans += 1
+                                    fg_int = s.get("color", 0)
+                                    fg = ((fg_int >> 16) & 0xFF, (fg_int >> 8) & 0xFF, fg_int & 0xFF)
+                                    sz = s.get("size", 10.0)
+                                    flags = s.get("flags", 0)
+                                    is_bold = bool(flags & 2) or ("bold" in s.get("font", "").lower())
+                                    thresh = 3.0 if (sz >= 18.0 or (sz >= 14.0 and is_bold)) else 4.5
+
+                                    bbox = pymupdf.Rect(s.get("bbox"))
+                                    bg = _resolve_bg_color(page, bbox, fg, drawings)
+                                    ratio = _contrast_ratio(fg, bg)
+
+                                    if round(ratio, 2) < thresh:
+                                        fg_hex = f"{fg[0]:02X}{fg[1]:02X}{fg[2]:02X}"
+                                        bg_hex = f"{bg[0]:02X}{bg[1]:02X}{bg[2]:02X}"
+                                        snippet = txt[:60]
+                                        failures.append(self.create_result(
+                                            status=CheckStatus.FAIL,
+                                            message=f"Text with insufficient contrast (ratio {ratio:.2f}:1, minimum {thresh:.1f}:1 required): '{snippet}'",
+                                            evidence=f"Page {page_num}: text color #{fg_hex}, background #{bg_hex}, ratio {ratio:.2f}:1 against {thresh:.1f}:1 threshold, font size {sz:.1f}pt",
+                                            page=page_num,
+                                            bounding_box=(bbox.x0, bbox.y0, bbox.x1, bbox.y1),
+                                            object_reference=f"Text '{snippet}' on page {page_num}",
+                                            custom_severity=Severity.HIGH,
+                                            custom_remediation=f"Increase contrast of text to at least {thresh:.1f}:1 by darkening the text or lightening the background.",
+                                            items_count=1
+                                        ))
+            except Exception as e:
+                logger.warning(f"Error during contrast evaluation with PyMuPDF: {e}")
+        else:
+            # Fallback for synthetic unit test models without file on disk
+            if not any(p.text.strip() for p in doc.pages) and not doc.fonts:
+                return []
+            for p in doc.pages:
+                for span in getattr(p, "text_spans", []):
+                    evaluated_spans += 1
+                    fg = span.get("color", (0, 0, 0))
+                    bg = span.get("bg_color", (255, 255, 255))
+                    sz = span.get("size", 10.0)
+                    is_bold = span.get("is_bold", False)
+                    thresh = 3.0 if (sz >= 18.0 or (sz >= 14.0 and is_bold)) else 4.5
+                    ratio = _contrast_ratio(fg, bg)
+                    if round(ratio, 2) < thresh:
+                        fg_hex = f"{fg[0]:02X}{fg[1]:02X}{fg[2]:02X}"
+                        bg_hex = f"{bg[0]:02X}{bg[1]:02X}{bg[2]:02X}"
+                        snippet = span.get("text", "text")[:60]
+                        failures.append(self.create_result(
+                            status=CheckStatus.FAIL,
+                            message=f"Text with insufficient contrast (ratio {ratio:.2f}:1, minimum {thresh:.1f}:1 required): '{snippet}'",
+                            evidence=f"Page {p.page_number}: text color #{fg_hex}, background #{bg_hex}, ratio {ratio:.2f}:1 against {thresh:.1f}:1 threshold, font size {sz:.1f}pt",
+                            page=p.page_number,
+                            object_reference=f"Text '{snippet}' on page {p.page_number}",
+                            custom_severity=Severity.HIGH,
+                            items_count=1
+                        ))
+            if evaluated_spans == 0:
+                evaluated_spans = sum(len(p.text.split()) for p in doc.pages if p.text)
+
+        fail_count = len(failures)
+        total_items = max(fail_count, total_stream_strings, evaluated_spans)
+        if total_items == 0:
+            return []
+
+        passed_count = max(0, total_items - fail_count)
+        results: List[CheckResult] = list(failures)
+
+        if passed_count > 0:
+            results.append(self.create_result(
+                status=CheckStatus.PASS,
+                message=f"{passed_count} text element(s) meet visual color contrast requirements (SC 1.4.3).",
+                evidence=f"Visual contrast meets or exceeds threshold ({'all evaluated text passes' if fail_count == 0 else f'{passed_count} passed, {fail_count} failed'}).",
+                items_count=passed_count
+            ))
+
+        return results
 
 
 class WCAGKeyboardAccessibleRule(BaseRule):

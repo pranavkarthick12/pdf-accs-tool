@@ -389,6 +389,7 @@ class PageModel:
     tagged_in_artifact_count: int = 0
     artifact_in_tagged_count: int = 0
     annotations_count: int = 0
+    text_spans: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
