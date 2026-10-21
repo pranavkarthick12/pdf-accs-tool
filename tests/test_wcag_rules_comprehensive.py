@@ -351,3 +351,118 @@ def test_wcag_1_4_distinguishable_large_text_threshold():
     results = rule.evaluate(doc)
     assert any(r.status == CheckStatus.PASS for r in results)
     assert not any(r.status == CheckStatus.FAIL for r in results)
+
+
+def test_wcag_1_4_1_use_of_color_link_distinction():
+    """SC 1.4.1: Links in text must provide non-color visual distinction (underline, distinct styling, or contrast)."""
+    from src.pdf_inspector.engine.wcag.wcag_rules import WCAGUseOfColorRule
+    from types import SimpleNamespace
+
+    p1 = PageModel(
+        page_number=1, width=612, height=792, text="Click here to read more."
+    )
+    doc = PDFDocumentModel(
+        filepath="", filename="link_color.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=True, pages=[p1],
+        links=[
+            SimpleNamespace(id="l1", text="here", page=1, relies_only_on_color=True),
+            SimpleNamespace(id="l2", text="read", page=1, relies_only_on_color=False),
+        ]
+    )
+    rule = WCAGUseOfColorRule()
+    results = rule.evaluate(doc)
+    fails = [r for r in results if r.status == CheckStatus.FAIL]
+    passes = [r for r in results if r.status == CheckStatus.PASS]
+    assert len(fails) == 1
+    assert "relies solely on color" in fails[0].message
+    assert fails[0].check_id == "WCAG-1.4.1"
+    assert len(passes) == 1
+    assert passes[0].items_count == 1
+
+
+def test_wcag_1_4_11_non_text_contrast_form_fields():
+    """SC 1.4.11: Interactive controls must have at least 3.0:1 boundary contrast."""
+    from src.pdf_inspector.engine.wcag.wcag_rules import WCAGNonTextContrastRule
+    from types import SimpleNamespace
+
+    p1 = PageModel(
+        page_number=1, width=612, height=792, text="Form Page"
+    )
+    doc = PDFDocumentModel(
+        filepath="", filename="form_contrast.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=True, pages=[p1],
+        form_fields=[
+            SimpleNamespace(name="Field1", page=1, lacks_contrast=True),
+            SimpleNamespace(name="Field2", page=1, lacks_contrast=False),
+        ]
+    )
+    rule = WCAGNonTextContrastRule()
+    results = rule.evaluate(doc)
+    fails = [r for r in results if r.status == CheckStatus.FAIL]
+    passes = [r for r in results if r.status == CheckStatus.PASS]
+    assert len(fails) == 1
+    assert "insufficient boundary contrast" in fails[0].message
+    assert fails[0].check_id == "WCAG-1.4.11"
+    assert len(passes) == 1
+    assert passes[0].items_count == 1
+
+
+def test_wcag_1_4_5_images_of_text_flag():
+    """SC 1.4.5: Evaluates images of text when flagged."""
+    from src.pdf_inspector.engine.wcag.wcag_rules import WCAGImagesOfTextRule
+    from types import SimpleNamespace
+
+    p1 = PageModel(
+        page_number=1, width=612, height=792, text="Image Page"
+    )
+    doc = PDFDocumentModel(
+        filepath="", filename="images_text.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=True, pages=[p1],
+        images=[
+            SimpleNamespace(id="img1", page=1, is_image_of_text=True, has_actual_text=False),
+            SimpleNamespace(id="img2", page=1, is_image_of_text=False, has_actual_text=False),
+        ]
+    )
+    rule = WCAGImagesOfTextRule()
+    results = rule.evaluate(doc)
+    assert len(results) == 1
+    assert results[0].status == CheckStatus.FAIL
+    assert results[0].check_id == "WCAG-1.4.5"
+
+
+def test_wcag_1_4_checkpoint_not_passed_solely_because_contrast_passes():
+    """Guideline 1.4 must not be marked PASS overall just because text contrast (SC 1.4.3) passes."""
+    from src.pdf_inspector.engine.runner import AuditRunner
+    from types import SimpleNamespace
+
+    # Document has 100% compliant black-on-white text (contrast ratio 21:1),
+    # but contains a link that relies solely on color (violating SC 1.4.1).
+    p1 = PageModel(
+        page_number=1, width=612, height=792,
+        text="All text is high contrast black on white.",
+        text_spans=[
+            {"text": "All text is high contrast black on white.", "color": (0, 0, 0), "bg_color": (255, 255, 255), "size": 12.0}
+        ]
+    )
+    doc = PDFDocumentModel(
+        filepath="", filename="contrast_pass_link_fail.pdf", filesize=100, pdf_version="1.7",
+        page_count=1, is_tagged=True, pages=[p1],
+        links=[
+            SimpleNamespace(id="l1", text="link", page=1, relies_only_on_color=True),
+        ]
+    )
+    runner = AuditRunner()
+    report = runner.run(doc)
+
+    wcag_counts = report.get_category_counts("WCAG")
+    dist_counts = wcag_counts.get("1.4 Distinguishable", {})
+
+    # Text contrast passes
+    assert dist_counts.get("passed", 0) > 0
+    # But link color fails!
+    assert dist_counts.get("failed", 0) == 1
+    # Thus, overall checkpoint has failures (failed > 0) and cannot be marked 100% compliant PASS!
+    failures = [r for r in report.results if r.category == "1.4 Distinguishable" and r.status == CheckStatus.FAIL]
+    assert len(failures) == 1
+    assert failures[0].check_id == "WCAG-1.4.1"
+

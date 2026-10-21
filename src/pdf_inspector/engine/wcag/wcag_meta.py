@@ -33,11 +33,11 @@ WCAG_GUIDELINE_META: Dict[str, Dict[str, Any]] = {
     },
     "1.4 Distinguishable": {
         "principle": "1. Perceivable",
-        "criteria": "SC 1.4.1 Use of Color (Level A), SC 1.4.3 Contrast (Minimum) (Level AA)",
+        "criteria": "SC 1.4.1 Use of Color (Level A), SC 1.4.2 Audio Control (Level A), SC 1.4.3 Contrast (Minimum) (Level AA), SC 1.4.4 Resize Text (Level AA), SC 1.4.5 Images of Text (Level AA), SC 1.4.10 Reflow (Level AA), SC 1.4.11 Non-text Contrast (Level AA), SC 1.4.12 Text Spacing (Level AA), SC 1.4.13 Content on Hover or Focus (Level AA)",
         "level": "Level A / AA",
-        "summary": "Make it easier for users to see and hear content by separating foreground from background. Normal text requires at least 4.5:1 contrast; large text requires at least 3.0:1.",
-        "remediation": "Increase contrast between text and background to at least 4.5:1 (3:1 for large text ≥18pt or ≥14pt bold), and never rely solely on color to convey information or state.",
-        "not_applicable_guidance": "No text content elements requiring contrast evaluation are present."
+        "summary": "Make it easier for users to see and hear content by separating foreground from background. Evaluates text visual contrast (SC 1.4.3), non-text control boundaries (SC 1.4.11), color-only dependency for links and controls (SC 1.4.1), and avoiding images of text (SC 1.4.5).",
+        "remediation": "Ensure standard text meets at least 4.5:1 contrast (3:1 for large text ≥18pt or ≥14pt bold), interactive form field boundaries achieve at least 3:1 contrast against adjacent background, links within body text provide visual cues (underline or distinct font styling) in addition to color, and raster images of text are replaced with real text.",
+        "not_applicable_guidance": "No text, link, form control, or image elements requiring visual distinction or contrast evaluation are present in this document. Non-machine-testable criteria (audio control, text resize, reflow) report '-' as they require manual assistive inspection."
     },
     "2.1 Keyboard Accessible": {
         "principle": "2. Operable",

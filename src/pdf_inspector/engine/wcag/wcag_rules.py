@@ -439,14 +439,14 @@ def _resolve_bg_color(page, bbox, fg: Tuple[int, int, int], drawings: List[Any])
     return white
 
 
-class WCAGDistinguishableRule(BaseRule):
-    rule_id = "WCAG-1.4"
-    name = "1.4 Distinguishable"
+class WCAGContrastMinimumRule(BaseRule):
+    rule_id = "WCAG-1.4.3"
+    name = "1.4.3 Contrast (Minimum)"
     category = "1.4 Distinguishable"
     standard = "WCAG"
     severity = Severity.HIGH
     machine_testable = True
-    description = "Make it easier for users to see and hear content including separating foreground from background (WCAG SC 1.4.3 Contrast Minimum)."
+    description = "The visual presentation of text and images of text has a contrast ratio of at least 4.5:1, except for large-scale text which requires at least 3:1 (WCAG SC 1.4.3)."
     remediation_template = "Verify visual contrast ratio of text against background meets 4.5:1 for standard text and 3:1 for large text (18pt+ or 14pt+ bold)."
 
     def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
@@ -590,6 +590,327 @@ class WCAGDistinguishableRule(BaseRule):
             ))
 
         return results
+
+
+class WCAGUseOfColorRule(BaseRule):
+    rule_id = "WCAG-1.4.1"
+    name = "1.4.1 Use of Color"
+    category = "1.4 Distinguishable"
+    standard = "WCAG"
+    severity = Severity.HIGH
+    machine_testable = True
+    description = "Color is not used as the only visual means of conveying information, indicating an action, prompting a response, or distinguishing a visual element (WCAG SC 1.4.1)."
+    remediation_template = "Ensure links and interactive elements within body text provide a visual distinction (underline, distinct font style, or at least 3:1 contrast against surrounding body text) so color is not the sole cue."
+
+    def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
+        total_stream_strings = _count_stream_text_strings(doc)
+        has_page_text = any(bool(p.text and p.text.strip()) for p in doc.pages)
+        if not doc.is_tagged and total_stream_strings == 0 and not has_page_text:
+            return []
+
+        failures: List[CheckResult] = []
+        total_links = 0
+
+        if doc.filepath and os.path.exists(doc.filepath):
+            try:
+                import pymupdf
+                with pymupdf.open(doc.filepath) as fitz_doc:
+                    for pno, page in enumerate(fitz_doc):
+                        page_num = pno + 1
+                        links = page.get_links()
+                        if not links:
+                            continue
+
+                        drawings = page.get_drawings()
+                        d = page.get_text("dict")
+                        all_spans = []
+                        for b in d.get("blocks", []):
+                            if b.get("type") == 0:
+                                for l in b.get("lines", []):
+                                    for s in l.get("spans", []):
+                                        if s.get("text", "").strip():
+                                            all_spans.append(s)
+
+                        for link in links:
+                            rect = link.get("from")
+                            if not rect:
+                                continue
+                            link_rect = pymupdf.Rect(rect)
+                            intersecting = [s for s in all_spans if pymupdf.Rect(s.get("bbox")).intersects(link_rect)]
+                            if not intersecting:
+                                continue
+
+                            total_links += 1
+                            link_text = " ".join(s.get("text", "").strip() for s in intersecting)[:60]
+
+                            # 1. Underline in link annotation border
+                            has_underline = False
+                            border = link.get("border", [])
+                            if border and len(border) >= 3 and border[2] > 0:
+                                has_underline = True
+
+                            # 2. Vector underline drawing beneath link text
+                            if not has_underline and drawings:
+                                for dr in drawings:
+                                    dr_rect = pymupdf.Rect(dr.get("rect", [0, 0, 0, 0]))
+                                    if dr_rect.height <= 3.0 and abs(dr_rect.y1 - link_rect.y1) <= 4.0:
+                                        if dr_rect.x0 <= link_rect.x1 and dr_rect.x1 >= link_rect.x0:
+                                            has_underline = True
+                                            break
+
+                            # 3. Distinct styling (bold, italic, font variant)
+                            has_distinct_font = any(
+                                bool(s.get("flags", 0) & 2) or bool(s.get("flags", 0) & 4) or
+                                "bold" in s.get("font", "").lower() or "italic" in s.get("font", "").lower()
+                                for s in intersecting
+                            )
+
+                            if has_underline or has_distinct_font:
+                                continue
+
+                            # 4. Contrast against surrounding non-link body text
+                            surrounding = [
+                                s for s in all_spans
+                                if not pymupdf.Rect(s.get("bbox")).intersects(link_rect) and
+                                abs(s.get("bbox")[1] - link_rect.y0) <= 20.0
+                            ]
+                            if surrounding:
+                                link_color_int = intersecting[0].get("color", 0)
+                                link_fg = ((link_color_int >> 16) & 0xFF, (link_color_int >> 8) & 0xFF, link_color_int & 0xFF)
+                                body_color_int = surrounding[0].get("color", 0)
+                                body_fg = ((body_color_int >> 16) & 0xFF, (body_color_int >> 8) & 0xFF, body_color_int & 0xFF)
+                                color_contrast = _contrast_ratio(link_fg, body_fg)
+                                if color_contrast < 3.0:
+                                    link_hex = f"{link_fg[0]:02X}{link_fg[1]:02X}{link_fg[2]:02X}"
+                                    body_hex = f"{body_fg[0]:02X}{body_fg[1]:02X}{body_fg[2]:02X}"
+                                    failures.append(self.create_result(
+                                        status=CheckStatus.FAIL,
+                                        message=f"Link text relies solely on color to distinguish it from surrounding body text (contrast ratio {color_contrast:.2f}:1 against body text is below 3.0:1): '{link_text}'",
+                                        evidence=f"Page {page_num}: link color #{link_hex}, body text color #{body_hex}, contrast ratio {color_contrast:.2f}:1, no underline or distinct font styling.",
+                                        page=page_num,
+                                        bounding_box=(link_rect.x0, link_rect.y0, link_rect.x1, link_rect.y1),
+                                        object_reference=f"Link '{link_text}' on page {page_num}",
+                                        custom_severity=Severity.HIGH,
+                                        custom_remediation="Add an underline or distinct font weight/style to the link so it does not rely solely on color.",
+                                        items_count=1
+                                    ))
+            except Exception as e:
+                logger.warning(f"Error during link color evaluation: {e}")
+        else:
+            # Fallback for synthetic unit test models
+            for l in getattr(doc, "links", []):
+                total_links += 1
+                if getattr(l, "relies_only_on_color", False):
+                    failures.append(self.create_result(
+                        status=CheckStatus.FAIL,
+                        message=f"Link on page {getattr(l, 'page', 1)} relies solely on color without visual distinction (WCAG SC 1.4.1).",
+                        evidence="Link has no underline and lacks 3:1 contrast against body text.",
+                        page=getattr(l, "page", 1),
+                        object_reference=f"Link on page {getattr(l, 'page', 1)}",
+                        custom_severity=Severity.HIGH,
+                        items_count=1
+                    ))
+
+        if total_links == 0:
+            return []
+
+        passed_links = max(0, total_links - len(failures))
+        results: List[CheckResult] = list(failures)
+        if passed_links > 0:
+            results.append(self.create_result(
+                status=CheckStatus.PASS,
+                message=f"{passed_links} link(s) provide sufficient visual distinction beyond color alone (SC 1.4.1).",
+                evidence=f"Links have visual underline, distinct font styling, or sufficient contrast against body text ({passed_links} passed, {len(failures)} failed).",
+                items_count=passed_links
+            ))
+        return results
+
+
+class WCAGImagesOfTextRule(BaseRule):
+    rule_id = "WCAG-1.4.5"
+    name = "1.4.5 Images of Text"
+    category = "1.4 Distinguishable"
+    standard = "WCAG"
+    severity = Severity.HIGH
+    machine_testable = False
+    description = "Text is used to convey information rather than images of text, except when the presentation of text is essential or customizable (WCAG SC 1.4.5)."
+    remediation_template = "Replace raster images of text with live, tagged text, or provide complete text equivalents and /ActualText mappings."
+
+    def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
+        # Per PAC standard and WCAG PDF techniques, automated validation of whether raster images contain text
+        # requires manual assistive inspection or author markup; PAC reports '-' (0 evaluations) to prevent
+        # fabricating unsupported checks or double-counting SC 1.1.1 alternative text criteria.
+        failures: List[CheckResult] = []
+        for img in getattr(doc, "images", []):
+            if getattr(img, "is_image_of_text", False) and not getattr(img, "has_actual_text", False):
+                failures.append(self.create_result(
+                    status=CheckStatus.FAIL,
+                    message=f"Image on page {getattr(img, 'page', 1)} is an image of text without programmatic text representation (WCAG SC 1.4.5).",
+                    evidence="Image contains rasterized text without /ActualText replacement.",
+                    page=getattr(img, "page", 1),
+                    object_reference=f"Image of text on page {getattr(img, 'page', 1)}",
+                    custom_severity=Severity.HIGH,
+                    items_count=1
+                ))
+        return failures
+
+
+class WCAGNonTextContrastRule(BaseRule):
+    rule_id = "WCAG-1.4.11"
+    name = "1.4.11 Non-text Contrast"
+    category = "1.4 Distinguishable"
+    standard = "WCAG"
+    severity = Severity.HIGH
+    machine_testable = True
+    description = "Visual information required to identify user interface components and graphical objects has a contrast ratio of at least 3:1 against adjacent colors (WCAG SC 1.4.11)."
+    remediation_template = "Ensure boundaries and visual indicators for interactive controls have at least 3:1 contrast against adjacent background colors."
+
+    def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
+        total_stream_strings = _count_stream_text_strings(doc)
+        has_page_text = any(bool(p.text and p.text.strip()) for p in doc.pages)
+        if not doc.is_tagged and total_stream_strings == 0 and not has_page_text:
+            return []
+
+        failures: List[CheckResult] = []
+        total_widgets = 0
+
+        if doc.filepath and os.path.exists(doc.filepath):
+            try:
+                import pymupdf
+                white = (255, 255, 255)
+                with pymupdf.open(doc.filepath) as fitz_doc:
+                    for pno, page in enumerate(fitz_doc):
+                        page_num = pno + 1
+                        widgets = list(page.widgets())
+                        if not widgets:
+                            continue
+
+                        drawings = page.get_drawings()
+                        for w in widgets:
+                            total_widgets += 1
+                            r = w.rect
+                            w_name = w.field_name or "Form Field"
+
+                            # 1. Explicit border color on widget annotation
+                            bc = w.border_color
+                            if bc is not None:
+                                bc_rgb = (int(round(bc[0]*255)), int(round(bc[1]*255)), int(round(bc[2]*255))) if len(bc) >= 3 else (int(round(bc[0]*255)),)*3
+                                bg = _resolve_bg_color(page, r, bc_rgb, drawings)
+                                ratio = _contrast_ratio(bc_rgb, bg)
+                                if round(ratio, 2) < 3.0:
+                                    bc_hex = f"{bc_rgb[0]:02X}{bc_rgb[1]:02X}{bc_rgb[2]:02X}"
+                                    bg_hex = f"{bg[0]:02X}{bg[1]:02X}{bg[2]:02X}"
+                                    failures.append(self.create_result(
+                                        status=CheckStatus.FAIL,
+                                        message=f"Form control '{w_name}' on page {page_num} has insufficient boundary contrast (ratio {ratio:.2f}:1, minimum 3.0:1 required) against background (SC 1.4.11).",
+                                        evidence=f"Page {page_num}: border color #{bc_hex}, background #{bg_hex}, ratio {ratio:.2f}:1 against 3.0:1 threshold.",
+                                        page=page_num,
+                                        bounding_box=(r.x0, r.y0, r.x1, r.y1),
+                                        object_reference=f"Control '{w_name}' on page {page_num}",
+                                        custom_severity=Severity.HIGH,
+                                        custom_remediation="Increase the contrast of the form field border to at least 3.0:1 against adjacent background colors.",
+                                        items_count=1
+                                    ))
+                                continue
+
+                            # 2. Explicit fill color on widget annotation
+                            fc = w.fill_color
+                            if fc is not None:
+                                fc_rgb = (int(round(fc[0]*255)), int(round(fc[1]*255)), int(round(fc[2]*255))) if len(fc) >= 3 else (int(round(fc[0]*255)),)*3
+                                bg = white
+                                ratio = _contrast_ratio(fc_rgb, bg)
+                                if round(ratio, 2) < 3.0:
+                                    fc_hex = f"{fc_rgb[0]:02X}{fc_rgb[1]:02X}{fc_rgb[2]:02X}"
+                                    bg_hex = f"{bg[0]:02X}{bg[1]:02X}{bg[2]:02X}"
+                                    failures.append(self.create_result(
+                                        status=CheckStatus.FAIL,
+                                        message=f"Form control '{w_name}' on page {page_num} has insufficient fill contrast (ratio {ratio:.2f}:1, minimum 3.0:1 required) against page background (SC 1.4.11).",
+                                        evidence=f"Page {page_num}: fill color #{fc_hex}, background #{bg_hex}, ratio {ratio:.2f}:1 against 3.0:1 threshold.",
+                                        page=page_num,
+                                        bounding_box=(r.x0, r.y0, r.x1, r.y1),
+                                        object_reference=f"Control '{w_name}' on page {page_num}",
+                                        custom_severity=Severity.HIGH,
+                                        custom_remediation="Increase the contrast of the form field fill to at least 3.0:1 against page background.",
+                                        items_count=1
+                                    ))
+                                continue
+
+                            # 3. Check for vector drawings bordering or enclosing the widget
+                            has_border_drawing = False
+                            if drawings:
+                                for dr in drawings:
+                                    dr_rect = pymupdf.Rect(dr.get("rect", [0, 0, 0, 0]))
+                                    if dr_rect.intersects(r):
+                                        has_border_drawing = True
+                                        break
+                            if not has_border_drawing:
+                                failures.append(self.create_result(
+                                    status=CheckStatus.FAIL,
+                                    message=f"Form control '{w_name}' on page {page_num} lacks visible boundary or background contrast to distinguish it from page content (SC 1.4.11).",
+                                    evidence=f"Page {page_num}: form field has no border color, no fill color, and no enclosing drawing boundary.",
+                                    page=page_num,
+                                    bounding_box=(r.x0, r.y0, r.x1, r.y1),
+                                    object_reference=f"Control '{w_name}' on page {page_num}",
+                                    custom_severity=Severity.HIGH,
+                                    custom_remediation="Add a visible border with at least 3.0:1 contrast around the form field.",
+                                    items_count=1
+                                ))
+            except Exception as e:
+                logger.warning(f"Error during non-text contrast evaluation: {e}")
+        else:
+            # Fallback for synthetic unit test models
+            for ff in getattr(doc, "form_fields", []):
+                total_widgets += 1
+                if getattr(ff, "lacks_contrast", False):
+                    failures.append(self.create_result(
+                        status=CheckStatus.FAIL,
+                        message=f"Form control on page {getattr(ff, 'page', 1)} has insufficient boundary contrast (SC 1.4.11).",
+                        evidence="Border contrast is below 3.0:1 threshold.",
+                        page=getattr(ff, "page", 1),
+                        object_reference=f"Form control on page {getattr(ff, 'page', 1)}",
+                        custom_severity=Severity.HIGH,
+                        items_count=1
+                    ))
+
+        if total_widgets == 0:
+            return []
+
+        passed_widgets = max(0, total_widgets - len(failures))
+        results: List[CheckResult] = list(failures)
+        if passed_widgets > 0:
+            results.append(self.create_result(
+                status=CheckStatus.PASS,
+                message=f"{passed_widgets} user interface control(s) meet visual non-text contrast requirements (SC 1.4.11).",
+                evidence=f"Form field boundaries and indicators achieve at least 3.0:1 contrast ({passed_widgets} passed, {len(failures)} failed).",
+                items_count=passed_widgets
+            ))
+        return results
+
+
+class WCAGDistinguishableRule(BaseRule):
+    rule_id = "WCAG-1.4"
+    name = "1.4 Distinguishable"
+    category = "1.4 Distinguishable"
+    standard = "WCAG"
+    severity = Severity.HIGH
+    machine_testable = True
+    description = "Make it easier for users to see and hear content including separating foreground from background (WCAG SC 1.4.1, 1.4.3, 1.4.5, 1.4.11)."
+    remediation_template = "Verify visual contrast ratio of text (SC 1.4.3), non-text controls (SC 1.4.11), color-only visual cues for links (SC 1.4.1), and avoid images of text (SC 1.4.5)."
+
+    def __init__(self):
+        super().__init__()
+        self.contrast_rule = WCAGContrastMinimumRule()
+        self.color_rule = WCAGUseOfColorRule()
+        self.images_rule = WCAGImagesOfTextRule()
+        self.nontext_rule = WCAGNonTextContrastRule()
+
+    def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
+        contrast_res = self.contrast_rule.evaluate(doc)
+        color_res = self.color_rule.evaluate(doc)
+        nontext_res = self.nontext_rule.evaluate(doc)
+        images_res = self.images_rule.evaluate(doc)
+
+        return contrast_res + color_res + nontext_res + images_res
 
 
 class WCAGKeyboardAccessibleRule(BaseRule):
