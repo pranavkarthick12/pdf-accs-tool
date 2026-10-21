@@ -134,7 +134,19 @@ class ParentTreeIntegrityRule(BaseRule):
                         if isinstance(target, dict):
                             og = target.get("obj_num")
                             if og and node.obj_num and og != 0 and node.obj_num != 0 and og != node.obj_num:
-                                mismatches.append((node.tag, node.obj_num, og, mcid, pg_num))
+                                # In PDF ISO 32000-1 Clause 14.7.4.2, marked content within a Form XObject
+                                # (/Stm) is indexed in /ParentTree under the Form XObject's own /StructParents,
+                                # rather than the page's /StructParents.
+                                # Verify if node.obj_num is validly mapped in ParentTree under any key for this MCID:
+                                is_matched_in_pt = False
+                                for sp_key, pt_entry_arr in pt_map.items():
+                                    if isinstance(pt_entry_arr, list) and mcid < len(pt_entry_arr):
+                                        t = pt_entry_arr[mcid]
+                                        if isinstance(t, dict) and t.get("obj_num") == node.obj_num:
+                                            is_matched_in_pt = True
+                                            break
+                                if not is_matched_in_pt:
+                                    mismatches.append((node.tag, node.obj_num, og, mcid, pg_num))
 
         if mismatches:
             for tag, n_obj, pt_obj, mcid, pg_num in mismatches[:10]:

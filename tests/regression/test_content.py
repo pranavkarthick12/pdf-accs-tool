@@ -373,3 +373,50 @@ class TestContentRegression:
         res = rule.evaluate(doc)
         fails = [r for r in res if r.status == CheckStatus.FAIL]
         assert any("is not a valid structure element" in r.message and "obj 150" in r.message for r in fails)
+
+    def test_form_xobject_stream_parent_tree_and_artifact_header(self):
+        """
+        Tests that Form XObject streams with their own /StructParents (ISO 32000-1 Clause 14.7.4.2)
+        and artifacted headers across pages are validly verified in ParentTreeIntegrityRule
+        and ContentTaggedRule without false positive failures.
+        """
+        from src.pdf_inspector.engine.pdf_ua.parent_tree_rules import ParentTreeIntegrityRule
+        from src.pdf_inspector.engine.pdf_ua.content_rules import ContentTaggedRule
+
+        # Structure tree has a Span (obj 230) on Page 13 referencing MCID 1 inside Form XObject /Fm0
+        span_node = StructureNode("span1", "Span", "Span", page=13, obj_num=230, mcids=[1], mcid_entries=[(1, 13)])
+        # Page 13 also has a Paragraph (obj 738) referencing MCID 1 in page content stream
+        p_node = StructureNode("p1", "P", "P", page=13, obj_num=738, mcids=[1], mcid_entries=[(1, 13)])
+        root = StructureNode("root", "StructTreeRoot", "StructTreeRoot", obj_num=99, children=[span_node, p_node])
+
+        page13 = PageModel(
+            page_number=13, width=600, height=800,
+            struct_parents_id=14, mcids=[1],
+            unmarked_real_content_count=0
+        )
+
+        # ParentTree:
+        # Key 14 (page struct parents): index 1 -> obj 738 (Paragraph)
+        # Key 31 (Form XObject struct parents): index 1 -> obj 230 (Span)
+        pt_map = {
+            14: [None, {"obj_num": 738, "tag": "P", "type": "StructElem", "has_parent": True, "parent_obj_num": 99}],
+            31: [None, {"obj_num": 230, "tag": "Span", "type": "StructElem", "has_parent": True, "parent_obj_num": 99}]
+        }
+        doc = PDFDocumentModel(
+            filepath="", filename="header_xobject.pdf", filesize=100, pdf_version="1.7",
+            page_count=13, is_tagged=True, structure_tree=root, pages=[page13],
+            has_parent_tree=True, parent_tree_valid=True, parent_tree_entries_count=2,
+            parent_tree_map=pt_map
+        )
+
+        # 1. ParentTreeIntegrityRule: must recognize obj 230 is mapped under key 31
+        pt_rule = ParentTreeIntegrityRule()
+        pt_res = pt_rule.evaluate(doc)
+        pt_fails = [r for r in pt_res if r.status == CheckStatus.FAIL]
+        assert len(pt_fails) == 0
+
+        # 2. ContentTaggedRule: clean page passes
+        content_rule = ContentTaggedRule()
+        content_res = content_rule.evaluate(doc)
+        content_fails = [r for r in content_res if r.status == CheckStatus.FAIL]
+        assert len(content_fails) == 0

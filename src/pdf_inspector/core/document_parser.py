@@ -221,6 +221,7 @@ class DocumentParser:
             pages: List[PageModel] = []
             page_mcid_data: Dict[int, Dict[int, Tuple[str, Tuple[float, float, float, float]]]] = {}
             page_artifact_xobjs: Dict[int, Set[str]] = {}
+            doc_artifact_xobjs: Set[str] = set()
             xobject_artifact_cache: Dict[int, Tuple[int, List[str]]] = {}
 
             parent_tree_map: Dict[int, Any] = {}
@@ -299,11 +300,14 @@ class DocumentParser:
                 tagged_in_art_count = 0
                 art_in_tagged_count = 0
 
-                # Collect XObjects defined on this page
+                # Collect direct XObjects defined on this page
                 xobj_info: Dict[str, Dict[str, Any]] = {}
                 try:
                     for xo in fitz_page.get_xobjects():
-                        xobj_info[xo[1]] = {"xref": xo[0], "rect": xo[3]}
+                        # xo is (xref, name, invoker, rect)
+                        is_direct = (xo[2] == 0)
+                        if is_direct or xo[1] not in xobj_info:
+                            xobj_info[xo[1]] = {"xref": xo[0], "rect": xo[3]}
                 except Exception as e:
                     logger.debug(f"Error checking page xobjects: {e}")
 
@@ -484,6 +488,7 @@ class DocumentParser:
 
                                 if any(s["tag"].lower() == "artifact" for s in stack):
                                     art_xobjs.add(xname)
+                                    doc_artifact_xobjs.add(xname)
 
                                 if xname in xobj_info:
                                     xo_entry = xobj_info[xname]
@@ -521,6 +526,7 @@ class DocumentParser:
 
                                     xo_arts_cnt, xo_snippets, xo_has_mcid, xo_has_paint = xobject_artifact_cache[xref]
                                     if xo_arts_cnt > 0:
+                                        doc_artifact_xobjs.add(xname)
                                         snippet_text = xo_snippets[0] if xo_snippets else ""
                                         bbox_tuple = (float(xo_rect[0]), float(xo_rect[1]), float(xo_rect[2]), float(xo_rect[3])) if xo_rect else None
 
@@ -550,7 +556,11 @@ class DocumentParser:
                                                 ))
                                     elif not in_tagged and not in_art:
                                         # Form XObject containing real content executed outside marked content
-                                        if xo_has_paint and not xo_has_mcid:
+                                        is_doc_art = (
+                                            xname in doc_artifact_xobjs
+                                            or any(xname in s for s in page_artifact_xobjs.values())
+                                        )
+                                        if xo_has_paint and not xo_has_mcid and not is_doc_art:
                                             unmarked_count += 1
                                             page_content_occs.append(ContentOccurrenceModel(
                                                 page_number=page_idx,
@@ -562,15 +572,20 @@ class DocumentParser:
                                             ))
                                 elif not in_tagged and not in_art:
                                     # XObject Do outside marked content and not in xobj_info
-                                    unmarked_count += 1
-                                    page_content_occs.append(ContentOccurrenceModel(
-                                        page_number=page_idx,
-                                        operator_type="xobject",
-                                        operator_name="Do",
-                                        is_unmarked_real_content=True,
-                                        xobject_name=xname,
-                                        snippet=f"XObject /{xname} Do"
-                                    ))
+                                    is_doc_art = (
+                                        xname in doc_artifact_xobjs
+                                        or any(xname in s for s in page_artifact_xobjs.values())
+                                    )
+                                    if not is_doc_art:
+                                        unmarked_count += 1
+                                        page_content_occs.append(ContentOccurrenceModel(
+                                            page_number=page_idx,
+                                            operator_type="xobject",
+                                            operator_name="Do",
+                                            is_unmarked_real_content=True,
+                                            xobject_name=xname,
+                                            snippet=f"XObject /{xname} Do"
+                                        ))
 
                 except Exception as e:
                     logger.debug(f"Error checking page dictionary: {e}")
