@@ -308,3 +308,79 @@ def test_wcag_1_4_distinguishable_two_decimal_rounding_boundary():
     assert any(r.status == CheckStatus.PASS for r in results)
     assert not any(r.status == CheckStatus.FAIL for r in results)
 
+
+def test_count_pdf_text_tokens_escaped_strings_and_arrays():
+    """Verifies that PDF content stream string token counting correctly handles escaped parentheses,
+    escaped backslashes, hex strings, and TJ arrays without overcounting.
+    """
+    from src.pdf_inspector.core.document_parser import count_pdf_text_tokens
+
+    # Case 1: Escaped parentheses inside literal string must be counted as 1 string operation
+    raw_escaped_parens = r"(Chapter 1 \(Overview\) and \(Details\)) Tj"
+    assert count_pdf_text_tokens(raw_escaped_parens) == 1
+
+    # Case 2: Escaped backslashes before parentheses
+    raw_escaped_backslash = r"(File path: C:\\folder\\doc\(1\).pdf) Tj"
+    assert count_pdf_text_tokens(raw_escaped_backslash) == 1
+
+    # Case 3: Strings inside a TJ array with kerning numbers
+    raw_tj_array = r"[(Section ) 20 (\() 10 (1.4\) Distinguishable) -30] TJ"
+    assert count_pdf_text_tokens(raw_tj_array) == 3
+
+    # Case 4: Hexadecimal string
+    raw_hex = r"<48656C6C6F> Tj"
+    assert count_pdf_text_tokens(raw_hex) == 1
+
+    # Case 5: Mixed hex and literal strings inside TJ array
+    raw_mixed = r"[<4142> 15 (Text) 10 <4344>] TJ"
+    assert count_pdf_text_tokens(raw_mixed) == 3
+
+    # Case 6: Multiple operations in a single content stream
+    raw_stream = (
+        r"(Intro \(v1\)) Tj " "\n"
+        r"[(Part 1) -10 (Part 2)] TJ " "\n"
+        r"(Next line) ' " "\n"
+        r"<46696E616C> Tj"
+    )
+    assert count_pdf_text_tokens(raw_stream) == 5
+
+
+def test_resolve_bg_color_wide_text_over_colored_background():
+    """Verifies that _resolve_bg_color correctly samples the background for wide text elements
+    (e.g., width > 300pt) over colored banners without skipping or blindly falling back to white.
+    """
+    import pymupdf
+    from src.pdf_inspector.engine.wcag.wcag_rules import _resolve_bg_color, _contrast_ratio
+
+    doc = pymupdf.open()
+    try:
+        # Page with a colored teal banner across the top
+        page = doc.new_page(width=612, height=792)
+        # Draw a teal banner from x=0..612, y=50..150 with RGB (0, 150, 159)
+        page.draw_rect(pymupdf.Rect(0, 50, 612, 150), color=None, fill=(0/255, 150/255, 159/255))
+
+        # A 400pt wide heading in white text: width = 480 - 80 = 400pt (> 300pt threshold)
+        wide_bbox = pymupdf.Rect(80, 70, 480, 120)
+        fg_white = (255, 255, 255)
+
+        bg = _resolve_bg_color(page, wide_bbox, fg_white)
+
+        # Must not fall back to white
+        assert bg != (255, 255, 255)
+        # Resolved background must be the teal banner
+        assert bg[0] < 50
+        assert 130 <= bg[1] <= 170
+        assert 130 <= bg[2] <= 175
+
+        # Contrast against white text must satisfy the 3.0:1 threshold for large text
+        ratio = _contrast_ratio(fg_white, bg)
+        assert ratio >= 3.0
+
+        # Safe fallback: On an empty white page, wide white text safely falls back to white
+        empty_page = doc.new_page(width=612, height=792)
+        empty_bg = _resolve_bg_color(empty_page, wide_bbox, fg_white)
+        assert empty_bg == (255, 255, 255)
+    finally:
+        doc.close()
+
+

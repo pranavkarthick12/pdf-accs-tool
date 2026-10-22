@@ -28,6 +28,123 @@ ARTIFACT_PATTERN = re.compile(r"/Artifact(?:\s*<<[^>]*?>>)?\s*B[DM]C", re.DOTALL
 ART_XOBJECT_PATTERN = re.compile(r'(/(\w+)\s*(?:<<.*?>>)?\s*B[DM]C)|(\bEMC\b)|(/(\w+)\s+Do\b)', re.DOTALL)
 CONTENT_TOKEN_PATTERN = re.compile(r'(/(\w+)\s+(<<.*?>>|/\w+)\s*BDC|/(\w+)\s+BMC|(\bEMC\b)|(/(\w+)\s+Do\b))', re.DOTALL)
 
+def count_pdf_text_tokens(stream_text: str) -> int:
+    """
+    Robust tokenizer for counting PDF text string operations from content stream text.
+    Handles escaped parentheses, escaped backslashes, nested balanced parentheses,
+    hexadecimal strings, and strings inside TJ arrays.
+    """
+    n = len(stream_text)
+    i = 0
+    total_strings = 0
+
+    while i < n:
+        c = stream_text[i]
+
+        # Whitespace
+        if c in ' \t\r\n\x00\x0c':
+            i += 1
+            continue
+
+        # Comment
+        if c == '%':
+            while i < n and stream_text[i] not in '\r\n':
+                i += 1
+            continue
+
+        # Literal string (...)
+        if c == '(':
+            depth = 1
+            i += 1
+            while i < n and depth > 0:
+                ch = stream_text[i]
+                if ch == '\\':
+                    i += 2
+                    continue
+                elif ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                i += 1
+
+            j = i
+            while j < n and stream_text[j] in ' \t\r\n\x00\x0c':
+                j += 1
+            op_match = re.match(r"^(?:Tj|'|\")(?![A-Za-z0-9_])", stream_text[j:])
+            if op_match:
+                total_strings += 1
+                i = j + len(op_match.group(0))
+            continue
+
+        # Hex string <...> (not dictionary <<)
+        if c == '<' and (i + 1 < n and stream_text[i + 1] != '<'):
+            i += 1
+            while i < n and stream_text[i] != '>':
+                i += 1
+            if i < n:
+                i += 1
+            j = i
+            while j < n and stream_text[j] in ' \t\r\n\x00\x0c':
+                j += 1
+            op_match = re.match(r"^(?:Tj|'|\")(?![A-Za-z0-9_])", stream_text[j:])
+            if op_match:
+                total_strings += 1
+                i = j + len(op_match.group(0))
+            continue
+
+        # TJ Array [...]
+        if c == '[':
+            i += 1
+            array_strings = 0
+            while i < n and stream_text[i] != ']':
+                ac = stream_text[i]
+                if ac in ' \t\r\n\x00\x0c':
+                    i += 1
+                    continue
+                if ac == '%':
+                    while i < n and stream_text[i] not in '\r\n':
+                        i += 1
+                    continue
+                if ac == '(':
+                    depth = 1
+                    i += 1
+                    while i < n and depth > 0:
+                        ch = stream_text[i]
+                        if ch == '\\':
+                            i += 2
+                            continue
+                        elif ch == '(':
+                            depth += 1
+                        elif ch == ')':
+                            depth -= 1
+                        i += 1
+                    array_strings += 1
+                    continue
+                if ac == '<' and (i + 1 < n and stream_text[i + 1] != '<'):
+                    i += 1
+                    while i < n and stream_text[i] != '>':
+                        i += 1
+                    if i < n:
+                        i += 1
+                    array_strings += 1
+                    continue
+                i += 1
+
+            if i < n and stream_text[i] == ']':
+                i += 1
+            j = i
+            while j < n and stream_text[j] in ' \t\r\n\x00\x0c':
+                j += 1
+            op_match = re.match(r"^TJ(?![A-Za-z0-9_])", stream_text[j:])
+            if op_match:
+                total_strings += array_strings
+                i = j + 2
+            continue
+
+        i += 1
+
+    return total_strings
+
 
 class DocumentParser:
     """Parses a PDF file into a complete, in-memory PDFDocumentModel."""
@@ -366,6 +483,21 @@ class DocumentParser:
                             if mcid_num not in mcids_found:
                                 mcids_found.append(mcid_num)
 
+                        # Count content-stream text string tokens (Tj, ', ", and TJ string items) matching PAC
+                        page_stream_text_count = 0
+                        try:
+                            for op in pikepdf.parse_content_stream(pike_page):
+                                op_str = str(op.operator)
+                                if op_str in ("Tj", "'", '"'):
+                                    page_stream_text_count += 1
+                                elif op_str == "TJ" and op.operands:
+                                    for item in op.operands[0]:
+                                        if isinstance(item, (pikepdf.String, bytes)):
+                                            page_stream_text_count += 1
+                        except Exception as e:
+                            logger.debug(f"Pikepdf stream parse failed on page {page_idx}, falling back to tokenizer: {e}")
+                            page_stream_text_count = count_pdf_text_tokens(stream_text)
+
                         # Marked content stack tracking with O(1) depth counters
                         tagged_depth = 0
                         art_depth = 0
@@ -460,7 +592,6 @@ class DocumentParser:
 
                             elif m.group("text_tj"):
                                 tj_txt = m.group("text_tj")
-                                page_stream_text_count += max(1, tj_txt.count("("))
                                 in_tagged = (tagged_depth > 0)
                                 in_art = (art_depth > 0)
                                 if in_tagged and not in_art:

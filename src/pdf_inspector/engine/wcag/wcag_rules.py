@@ -442,19 +442,51 @@ def _resolve_bg_color(page, bbox, fg: Tuple[int, int, int], drawings: Optional[L
     if page is not None:
         try:
             import pymupdf
-            sample_rect = pymupdf.Rect(bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2) & page.rect
-            if not sample_rect.is_empty and sample_rect.width <= 300 and sample_rect.height <= 80:
-                pix = page.get_pixmap(clip=sample_rect, dpi=36)
-                samples = pix.samples
-                n = pix.n
+            full_sample_rect = pymupdf.Rect(bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2) & page.rect
+            if not full_sample_rect.is_empty:
+                # To prevent excessive memory/rendering overhead on wide or tall text elements
+                # (e.g. banners, titles, or headers), construct bounded representative
+                # sampling windows rather than skipping wide text or rendering massive pixmaps.
+                max_win_w = 250.0
+                max_win_h = 80.0
+
+                sample_windows: List[pymupdf.Rect] = []
+                if full_sample_rect.width <= max_win_w and full_sample_rect.height <= max_win_h:
+                    sample_windows.append(full_sample_rect)
+                else:
+                    h = min(full_sample_rect.height, max_win_h)
+                    y0 = full_sample_rect.y0
+                    y1 = y0 + h
+
+                    # Sample start window
+                    w_left = min(full_sample_rect.width, max_win_w)
+                    sample_windows.append(pymupdf.Rect(full_sample_rect.x0, y0, full_sample_rect.x0 + w_left, y1))
+
+                    # If text is significantly wider, also sample a center window to handle centered backgrounds/graphics
+                    if full_sample_rect.width > max_win_w * 1.5:
+                        mid_x = (full_sample_rect.x0 + full_sample_rect.x1) / 2.0
+                        sample_windows.append(pymupdf.Rect(
+                            max(full_sample_rect.x0, mid_x - max_win_w / 2.0),
+                            y0,
+                            min(full_sample_rect.x1, mid_x + max_win_w / 2.0),
+                            y1
+                        ))
+
                 colors: Dict[Tuple[int, int, int], int] = {}
-                step = max(n, (len(samples) // 100) * n) # at most 100 sample points
-                for i in range(0, len(samples) - n + 1, step):
-                    r, g, b = samples[i], samples[i+1], samples[i+2]
-                    if abs(r - fg[0]) < 15 and abs(g - fg[1]) < 15 and abs(b - fg[2]) < 15:
+                for win in sample_windows:
+                    if win.is_empty:
                         continue
-                    c = (r, g, b)
-                    colors[c] = colors.get(c, 0) + 1
+                    pix = page.get_pixmap(clip=win, dpi=36)
+                    samples = pix.samples
+                    n = pix.n
+                    step = max(n, (len(samples) // 100) * n) # at most 100 sample points per window
+                    for i in range(0, len(samples) - n + 1, step):
+                        r, g, b = samples[i], samples[i+1], samples[i+2]
+                        if abs(r - fg[0]) < 15 and abs(g - fg[1]) < 15 and abs(b - fg[2]) < 15:
+                            continue
+                        c = (r, g, b)
+                        colors[c] = colors.get(c, 0) + 1
+
                 if colors:
                     return max(colors.items(), key=lambda it: it[1])[0]
         except Exception:
