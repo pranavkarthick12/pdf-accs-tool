@@ -232,9 +232,7 @@ class DocumentParser:
                         if isinstance(val, (pikepdf.Array, list)):
                             arr = []
                             for item in val:
-                                if item is None or (isinstance(item, pikepdf.Object) and str(item) == "null"):
-                                    arr.append(None)
-                                elif isinstance(item, (pikepdf.Dictionary, dict)):
+                                if isinstance(item, (pikepdf.Dictionary, dict)):
                                     og = getattr(item, "objgen", (None, None))[0] if hasattr(item, "objgen") else None
                                     s_tag = str(item.get("/S", "")).strip("/")
                                     t_val = str(item.get("/Type", "")).strip("/")
@@ -248,6 +246,10 @@ class DocumentParser:
                                         "has_parent": has_p,
                                         "parent_obj_num": p_og
                                     })
+                                elif item is None:
+                                    arr.append(None)
+                                elif isinstance(item, pikepdf.Object) and (getattr(item, "_type_name", "") == "null" or str(item) == "null"):
+                                    arr.append(None)
                                 else:
                                     arr.append({"obj_num": None, "tag": str(item), "type": "", "has_parent": False, "parent_obj_num": None})
                             parent_tree_map[sp_id] = arr
@@ -277,6 +279,8 @@ class DocumentParser:
                 re.DOTALL
             )
 
+            doc_stream_text_count = 0
+
             for page_idx, pike_page in enumerate(pike_doc.pages, start=1):
                 fitz_page = fitz_doc[page_idx - 1]
                 rect = fitz_page.rect
@@ -299,6 +303,8 @@ class DocumentParser:
                 art_ops_count = 0
                 tagged_in_art_count = 0
                 art_in_tagged_count = 0
+                page_stream_text_count = 0
+                page_artifact_texts: Set[str] = set()
 
                 # Collect direct XObjects defined on this page
                 xobj_info: Dict[str, Dict[str, Any]] = {}
@@ -359,7 +365,9 @@ class DocumentParser:
                             if mcid_num not in mcids_found:
                                 mcids_found.append(mcid_num)
 
-                        # Marked content stack tracking
+                        # Marked content stack tracking with O(1) depth counters
+                        tagged_depth = 0
+                        art_depth = 0
                         stack: List[Dict[str, Any]] = []
 
                         for m in STREAM_TOKEN_RE.finditer(stream_text):
@@ -374,8 +382,8 @@ class DocumentParser:
                                         mcid = int(mc_match.group(1))
 
                                 is_art = (tag.lower() == "artifact" or "/artifact" in props.lower())
-                                in_tagged = any(s["mcid"] is not None for s in stack)
-                                in_art = any(s["is_artifact"] for s in stack)
+                                in_tagged = (tagged_depth > 0)
+                                in_art = (art_depth > 0)
 
                                 if is_art:
                                     if in_tagged:
@@ -406,14 +414,18 @@ class DocumentParser:
                                             is_inside_artifact=True
                                         ))
 
+                                if mcid is not None:
+                                    tagged_depth += 1
+                                if is_art:
+                                    art_depth += 1
                                 stack.append({"tag": tag, "mcid": mcid, "is_artifact": is_art})
 
                             elif m.group("bmc"):
                                 bmc_m = re.match(r"/(\w+)\s*BMC", m.group("bmc"))
                                 tag = bmc_m.group(1) if bmc_m else "Span"
                                 is_art = (tag.lower() == "artifact")
-                                in_tagged = any(s["mcid"] is not None for s in stack)
-                                in_art = any(s["is_artifact"] for s in stack)
+                                in_tagged = (tagged_depth > 0)
+                                in_art = (art_depth > 0)
 
                                 if is_art:
                                     if in_tagged:
@@ -433,20 +445,31 @@ class DocumentParser:
                                             is_inside_tagged=False
                                         ))
 
+                                if is_art:
+                                    art_depth += 1
                                 stack.append({"tag": tag, "mcid": None, "is_artifact": is_art})
 
                             elif m.group("emc"):
                                 if stack:
-                                    stack.pop()
+                                    popped = stack.pop()
+                                    if popped["mcid"] is not None:
+                                        tagged_depth -= 1
+                                    if popped["is_artifact"]:
+                                        art_depth -= 1
 
                             elif m.group("text_tj"):
                                 tj_txt = m.group("text_tj")
-                                in_tagged = any(s["mcid"] is not None for s in stack)
-                                in_art = any(s["is_artifact"] for s in stack)
+                                page_stream_text_count += max(1, tj_txt.count("("))
+                                in_tagged = (tagged_depth > 0)
+                                in_art = (art_depth > 0)
                                 if in_tagged and not in_art:
                                     tagged_ops_count += 1
                                 elif in_art:
                                     art_ops_count += 1
+                                    for s_match in re.findall(r"\(([^)]*)\)", tj_txt):
+                                        s_val = s_match.strip()
+                                        if s_val:
+                                            page_artifact_texts.add(s_val)
                                 else:
                                     # Text operator executed outside of any marked content sequence
                                     unmarked_count += 1
@@ -460,8 +483,8 @@ class DocumentParser:
 
                             elif m.group("paint"):
                                 paint_op = m.group("paint")
-                                in_tagged = any(s["mcid"] is not None for s in stack)
-                                in_art = any(s["is_artifact"] for s in stack)
+                                in_tagged = (tagged_depth > 0)
+                                in_art = (art_depth > 0)
                                 if in_tagged and not in_art:
                                     tagged_ops_count += 1
                                 elif in_art:
@@ -479,14 +502,14 @@ class DocumentParser:
                             elif m.group("do"):
                                 do_m = re.match(r"/(\w+)\s+Do", m.group("do"))
                                 xname = do_m.group(1) if do_m else ""
-                                in_tagged = any(s["mcid"] is not None for s in stack)
-                                in_art = any(s["is_artifact"] for s in stack)
+                                in_tagged = (tagged_depth > 0)
+                                in_art = (art_depth > 0)
                                 if in_tagged and not in_art:
                                     tagged_ops_count += 1
                                 elif in_art:
                                     art_ops_count += 1
 
-                                if any(s["tag"].lower() == "artifact" for s in stack):
+                                if in_art:
                                     art_xobjs.add(xname)
                                     doc_artifact_xobjs.add(xname)
 
@@ -590,6 +613,7 @@ class DocumentParser:
                 except Exception as e:
                     logger.debug(f"Error checking page dictionary: {e}")
 
+                doc_stream_text_count += page_stream_text_count
                 page_artifact_xobjs[page_idx] = art_xobjs
 
                 # Image and link counts
@@ -632,7 +656,9 @@ class DocumentParser:
                     artifact_operations_count=art_ops_count,
                     tagged_in_artifact_count=tagged_in_art_count,
                     artifact_in_tagged_count=art_in_tagged_count,
-                    annotations_count=annots_count
+                    annotations_count=annots_count,
+                    stream_text_strings_count=page_stream_text_count,
+                    artifact_texts=page_artifact_texts
                 ))
 
             # 3. Structure Tree
@@ -832,7 +858,8 @@ class DocumentParser:
                 bookmarks=bookmarks,
                 raw_metadata=doc_info,
                 embedded_files_count=embedded_files_count,
-                form_xobjects=form_xobjects
+                form_xobjects=form_xobjects,
+                stream_text_strings_count=doc_stream_text_count
             )
         finally:
             fitz_doc.close()
@@ -873,23 +900,28 @@ class DocumentParser:
     def _decode_page_mcid_texts(
         cls,
         pike_page: pikepdf.Page,
-        font_cmap_cache: Dict[Any, Dict[int, str]]
+        font_cmap_cache: Dict[Any, Tuple[Dict[int, str], bool]]
     ) -> Dict[int, str]:
         page_cmaps: Dict[str, Dict[int, str]] = {}
         font_is_2byte: Dict[str, bool] = {}
+        font_has_wide: Dict[str, bool] = {}
         try:
             if "/Resources" in pike_page and "/Font" in pike_page.Resources:
                 for f_name, f_obj in pike_page.Resources.Font.items():
                     fn_str = str(f_name).strip("/")
                     obj_id = getattr(f_obj, "objgen", None)
                     if obj_id and obj_id in font_cmap_cache:
-                        page_cmaps[fn_str] = font_cmap_cache[obj_id]
+                        cmap, has_wide = font_cmap_cache[obj_id]
+                        page_cmaps[fn_str] = cmap
+                        font_has_wide[fn_str] = has_wide
                     elif "/ToUnicode" in f_obj:
                         try:
                             cmap = cls._parse_tounicode_cmap(f_obj.ToUnicode.read_bytes())
+                            has_wide = any(k > 255 for k in cmap.keys())
                             if obj_id:
-                                font_cmap_cache[obj_id] = cmap
+                                font_cmap_cache[obj_id] = (cmap, has_wide)
                             page_cmaps[fn_str] = cmap
+                            font_has_wide[fn_str] = has_wide
                         except Exception:
                             pass
 
@@ -899,30 +931,37 @@ class DocumentParser:
             ops = pikepdf.parse_content_stream(pike_page)
             stack: List[Optional[int]] = []
             current_font = None
+            current_cmap: Dict[int, str] = {}
+            current_is_2b = False
+            current_has_wide = False
+            active_mcid = None
             mcid_chars: Dict[int, List[str]] = {}
 
             for operands, operator in ops:
                 op = str(operator)
                 if op == "Tf" and operands:
                     current_font = str(operands[0]).strip("/")
+                    current_cmap = page_cmaps.get(current_font, {})
+                    current_is_2b = font_is_2byte.get(current_font, False)
+                    current_has_wide = font_has_wide.get(current_font, False)
                 elif op == "BDC":
                     props = operands[1] if len(operands) > 1 else None
                     mcid = None
                     if isinstance(props, pikepdf.Dictionary) and "/MCID" in props:
                         mcid = int(props["/MCID"])
                     stack.append(mcid)
+                    if mcid is not None:
+                        active_mcid = mcid
                 elif op == "BMC":
                     stack.append(None)
                 elif op == "EMC":
                     if stack:
                         stack.pop()
+                        active_mcid = next((m for m in reversed(stack) if m is not None), None)
                 elif op in ("Tj", "'", "\"", "TJ"):
-                    curr_mcid = next((m for m in reversed(stack) if m is not None), None)
-                    if curr_mcid is not None:
-                        if curr_mcid not in mcid_chars:
-                            mcid_chars[curr_mcid] = []
-                        cmap = page_cmaps.get(current_font, {})
-                        is_2b = font_is_2byte.get(current_font, False)
+                    if active_mcid is not None:
+                        if active_mcid not in mcid_chars:
+                            mcid_chars[active_mcid] = []
                         raw_items: List[bytes] = []
                         if op in ("Tj", "'", "\"") and operands and isinstance(operands[0], (pikepdf.String, bytes)):
                             raw_items.append(bytes(operands[0]))
@@ -932,16 +971,16 @@ class DocumentParser:
                                     raw_items.append(bytes(item))
 
                         for b in raw_items:
-                            if cmap:
-                                if is_2b or (len(b) % 2 == 0 and any(k > 255 for k in cmap.keys())):
+                            if current_cmap:
+                                if current_is_2b or (len(b) % 2 == 0 and current_has_wide):
                                     for i in range(0, len(b) - 1, 2):
                                         code = int.from_bytes(b[i:i+2], 'big')
-                                        mcid_chars[curr_mcid].append(cmap.get(code, chr(code) if code < 256 else ""))
+                                        mcid_chars[active_mcid].append(current_cmap.get(code, chr(code) if code < 256 else ""))
                                 else:
                                     for byte_val in b:
-                                        mcid_chars[curr_mcid].append(cmap.get(byte_val, chr(byte_val)))
+                                        mcid_chars[active_mcid].append(current_cmap.get(byte_val, chr(byte_val)))
                             else:
-                                mcid_chars[curr_mcid].append(b.decode("latin1", errors="ignore"))
+                                mcid_chars[active_mcid].append(b.decode("latin1", errors="ignore"))
 
             return {mc: "".join(chars) for mc, chars in mcid_chars.items()}
         except Exception as e:
@@ -1245,25 +1284,34 @@ class DocumentParser:
     def _extract_links(self, fitz_doc: pymupdf.Document, struct_tree: Optional[StructureNode]) -> List[LinkModel]:
         """Extracts links from page annotations and associates them with Link structure elements."""
         links: List[LinkModel] = []
-        link_nodes: List[StructureNode] = []
+        link_nodes_by_page: Dict[int, List[StructureNode]] = {}
         if struct_tree:
-            link_nodes = struct_tree.find_all_by_standard_tag("Link")
+            for ln in struct_tree.find_all_by_standard_tag("Link"):
+                if ln.page:
+                    link_nodes_by_page.setdefault(ln.page, []).append(ln)
 
         for page_idx in range(len(fitz_doc)):
             page = fitz_doc[page_idx]
             page_num = page_idx + 1
-            for l in page.get_links():
+            page_links = page.get_links()
+            if not page_links:
+                continue
+
+            # Build textpage once per page with links for fast clip extraction
+            tp = page.get_textpage()
+            page_lns = link_nodes_by_page.get(page_num, [])
+            matched_node = page_lns[0] if page_lns else None
+
+            for l in page_links:
                 rect = l.get("from", (0, 0, 0, 0))
                 uri = l.get("uri", "")
                 page_dest = l.get("page", None)
                 if page_dest is not None:
                     page_dest += 1
 
-                link_text = page.get_text("text", clip=rect).strip()
+                link_text = page.get_text("text", clip=rect, textpage=tp).strip()
                 if not link_text and uri:
                     link_text = uri
-
-                matched_node = next((ln for ln in link_nodes if ln.page == page_num), None)
 
                 links.append(LinkModel(
                     id=f"link_p{page_num}_{len(links) + 1}",

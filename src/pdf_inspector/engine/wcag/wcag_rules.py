@@ -8,6 +8,7 @@ with standards-based zero-applicable object handling and exact PAC parity.
 from typing import List, Dict, Any, Set, Optional, Tuple
 import os
 import re
+import bisect
 import logging
 from ..rule_base import BaseRule
 from ...core.models import PDFDocumentModel, CheckResult, CheckStatus, Severity
@@ -18,6 +19,20 @@ logger = logging.getLogger(__name__)
 
 def _count_stream_text_strings(doc: PDFDocumentModel) -> int:
     """Counts text operations / string tokens across PDF content streams matching PAC."""
+    if hasattr(doc, "_stream_text_strings_cache") and doc._stream_text_strings_cache is not None:
+        return doc._stream_text_strings_cache
+
+    cached = getattr(doc, "stream_text_strings_count", 0)
+    if cached > 0:
+        doc._stream_text_strings_cache = cached
+        return cached
+
+    if doc.pages:
+        page_sum = sum(getattr(p, "stream_text_strings_count", 0) for p in doc.pages)
+        if page_sum > 0:
+            doc._stream_text_strings_cache = page_sum
+            return page_sum
+
     if doc.filepath and os.path.exists(doc.filepath):
         try:
             import pikepdf
@@ -30,9 +45,10 @@ def _count_stream_text_strings(doc: PDFDocumentModel) -> int:
                             count += 1
                         elif op_str == "TJ":
                             for item in op.operands[0]:
-                                if isinstance(item, pikepdf.String):
+                                if isinstance(item, (pikepdf.String, bytes)):
                                     count += 1
                 if count > 0:
+                    doc._stream_text_strings_cache = count
                     return count
         except Exception:
             pass

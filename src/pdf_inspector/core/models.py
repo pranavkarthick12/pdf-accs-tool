@@ -7,7 +7,7 @@ check results, and accessibility audit reports.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Set
 import datetime
 
 
@@ -390,6 +390,8 @@ class PageModel:
     artifact_in_tagged_count: int = 0
     annotations_count: int = 0
     text_spans: List[Dict[str, Any]] = field(default_factory=list)
+    stream_text_strings_count: int = 0
+    artifact_texts: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -442,6 +444,7 @@ class PDFDocumentModel:
     raw_metadata: Dict[str, Any] = field(default_factory=dict)
     embedded_files_count: int = 0
     form_xobjects: List[FormXObjectModel] = field(default_factory=list)
+    stream_text_strings_count: int = 0
 
     @property
     def all_artifacts(self) -> List[ArtifactOccurrenceModel]:
