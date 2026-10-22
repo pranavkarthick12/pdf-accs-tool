@@ -43,8 +43,10 @@ class DocumentLanguageRule(BaseRule):
                     custom_remediation="Use a standard IETF BCP 47 language code such as 'en', 'en-US', 'fr-CA', or 'de-DE'."
                 ))
             else:
-                total_text_units = 0
-                if doc.filepath and os.path.exists(doc.filepath):
+                total_text_units = getattr(doc, "stream_text_strings_count", 0)
+                if total_text_units == 0 and hasattr(doc, "pages") and doc.pages:
+                    total_text_units = sum(getattr(p, "stream_text_strings_count", 0) for p in doc.pages)
+                if total_text_units == 0 and doc.filepath and os.path.exists(doc.filepath):
                     try:
                         import pikepdf
                         with pikepdf.open(doc.filepath) as pdf:

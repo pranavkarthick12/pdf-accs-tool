@@ -285,7 +285,8 @@ class DocumentParser:
                 fitz_page = fitz_doc[page_idx - 1]
                 rect = fitz_page.rect
                 rotation = fitz_page.rotation
-                text = fitz_page.get_text("text")
+                blocks = fitz_page.get_text("blocks")
+                text = "\n".join(b[4] for b in blocks if len(b) > 4 and b[4])
 
                 # Check Tab order and StructParents on page dictionary
                 tab_mode = "Unspecified"
@@ -623,7 +624,6 @@ class DocumentParser:
                 # Decode true MCID texts from page content stream using font ToUnicode CMaps
                 if mcids_found:
                     mcid_texts = self._decode_page_mcid_texts(pike_page, font_cmap_cache)
-                    blocks = fitz_page.get_text("blocks")
                     for idx, b in enumerate(blocks):
                         if idx < len(mcids_found):
                             target_mcid = mcids_found[idx]
@@ -903,6 +903,7 @@ class DocumentParser:
         font_cmap_cache: Dict[Any, Tuple[Dict[int, str], bool]]
     ) -> Dict[int, str]:
         page_cmaps: Dict[str, Dict[int, str]] = {}
+        page_tables_1b: Dict[str, List[str]] = {}
         font_is_2byte: Dict[str, bool] = {}
         font_has_wide: Dict[str, bool] = {}
         try:
@@ -911,37 +912,56 @@ class DocumentParser:
                     fn_str = str(f_name).strip("/")
                     obj_id = getattr(f_obj, "objgen", None)
                     if obj_id and obj_id in font_cmap_cache:
-                        cmap, has_wide = font_cmap_cache[obj_id]
+                        cached_entry = font_cmap_cache[obj_id]
+                        if len(cached_entry) == 4:
+                            cmap, has_wide, is_2b, table_1b = cached_entry
+                        else:
+                            cmap, has_wide = cached_entry[:2]
+                            subtype = str(f_obj.get("/Subtype", "")).strip("/")
+                            is_2b = (subtype == "Type0")
+                            table_1b = [cmap.get(i, chr(i)) for i in range(256)] if (not is_2b and cmap) else None
+                            font_cmap_cache[obj_id] = (cmap, has_wide, is_2b, table_1b)
                         page_cmaps[fn_str] = cmap
                         font_has_wide[fn_str] = has_wide
-                    elif "/ToUnicode" in f_obj:
-                        try:
-                            cmap = cls._parse_tounicode_cmap(f_obj.ToUnicode.read_bytes())
-                            has_wide = any(k > 255 for k in cmap.keys())
-                            if obj_id:
-                                font_cmap_cache[obj_id] = (cmap, has_wide)
-                            page_cmaps[fn_str] = cmap
-                            font_has_wide[fn_str] = has_wide
-                        except Exception:
-                            pass
-
-                    subtype = str(f_obj.get("/Subtype", "")).strip("/")
-                    font_is_2byte[fn_str] = (subtype == "Type0")
+                        font_is_2byte[fn_str] = is_2b
+                        if table_1b is not None:
+                            page_tables_1b[fn_str] = table_1b
+                    else:
+                        cmap = {}
+                        has_wide = False
+                        if "/ToUnicode" in f_obj:
+                            try:
+                                cmap = cls._parse_tounicode_cmap(f_obj.ToUnicode.read_bytes())
+                                has_wide = any(k > 255 for k in cmap.keys())
+                            except Exception:
+                                pass
+                        subtype = str(f_obj.get("/Subtype", "")).strip("/")
+                        is_2b = (subtype == "Type0")
+                        table_1b = [cmap.get(i, chr(i)) for i in range(256)] if (not is_2b and cmap) else None
+                        if obj_id:
+                            font_cmap_cache[obj_id] = (cmap, has_wide, is_2b, table_1b)
+                        page_cmaps[fn_str] = cmap
+                        font_has_wide[fn_str] = has_wide
+                        font_is_2byte[fn_str] = is_2b
+                        if table_1b is not None:
+                            page_tables_1b[fn_str] = table_1b
 
             ops = pikepdf.parse_content_stream(pike_page)
             stack: List[Optional[int]] = []
             current_font = None
             current_cmap: Dict[int, str] = {}
+            current_1b_table: Optional[List[str]] = None
             current_is_2b = False
             current_has_wide = False
             active_mcid = None
-            mcid_chars: Dict[int, List[str]] = {}
+            mcid_chunks: Dict[int, List[str]] = {}
 
             for operands, operator in ops:
                 op = str(operator)
                 if op == "Tf" and operands:
                     current_font = str(operands[0]).strip("/")
                     current_cmap = page_cmaps.get(current_font, {})
+                    current_1b_table = page_tables_1b.get(current_font)
                     current_is_2b = font_is_2byte.get(current_font, False)
                     current_has_wide = font_has_wide.get(current_font, False)
                 elif op == "BDC":
@@ -960,8 +980,8 @@ class DocumentParser:
                         active_mcid = next((m for m in reversed(stack) if m is not None), None)
                 elif op in ("Tj", "'", "\"", "TJ"):
                     if active_mcid is not None:
-                        if active_mcid not in mcid_chars:
-                            mcid_chars[active_mcid] = []
+                        if active_mcid not in mcid_chunks:
+                            mcid_chunks[active_mcid] = []
                         raw_items: List[bytes] = []
                         if op in ("Tj", "'", "\"") and operands and isinstance(operands[0], (pikepdf.String, bytes)):
                             raw_items.append(bytes(operands[0]))
@@ -973,16 +993,20 @@ class DocumentParser:
                         for b in raw_items:
                             if current_cmap:
                                 if current_is_2b or (len(b) % 2 == 0 and current_has_wide):
-                                    for i in range(0, len(b) - 1, 2):
-                                        code = int.from_bytes(b[i:i+2], 'big')
-                                        mcid_chars[active_mcid].append(current_cmap.get(code, chr(code) if code < 256 else ""))
+                                    blen = len(b)
+                                    decoded_chars = [
+                                        current_cmap.get((b[i] << 8) | b[i+1], chr((b[i] << 8) | b[i+1]) if ((b[i] << 8) | b[i+1]) < 256 else "")
+                                        for i in range(0, blen - 1, 2)
+                                    ]
+                                    mcid_chunks[active_mcid].append("".join(decoded_chars))
+                                elif current_1b_table is not None:
+                                    mcid_chunks[active_mcid].append("".join(current_1b_table[x] for x in b))
                                 else:
-                                    for byte_val in b:
-                                        mcid_chars[active_mcid].append(current_cmap.get(byte_val, chr(byte_val)))
+                                    mcid_chunks[active_mcid].append("".join(current_cmap.get(x, chr(x)) for x in b))
                             else:
-                                mcid_chars[active_mcid].append(b.decode("latin1", errors="ignore"))
+                                mcid_chunks[active_mcid].append(b.decode("latin1", errors="ignore"))
 
-            return {mc: "".join(chars) for mc, chars in mcid_chars.items()}
+            return {mc: "".join(chunks) for mc, chunks in mcid_chunks.items()}
         except Exception as e:
             logger.debug(f"Error decoding page MCID texts: {e}")
             return {}
@@ -1297,8 +1321,9 @@ class DocumentParser:
             if not page_links:
                 continue
 
-            # Build textpage once per page with links for fast clip extraction
+            # Build textpage and word list once per page with links for fast text matching
             tp = page.get_textpage()
+            words = tp.extractWORDS()
             page_lns = link_nodes_by_page.get(page_num, [])
             matched_node = page_lns[0] if page_lns else None
 
@@ -1309,7 +1334,17 @@ class DocumentParser:
                 if page_dest is not None:
                     page_dest += 1
 
-                link_text = page.get_text("text", clip=rect, textpage=tp).strip()
+                rx0, ry0, rx1, ry1 = (rect.x0, rect.y0, rect.x1, rect.y1) if hasattr(rect, "x0") else rect
+                # Fast word intersection against link rectangle
+                matched_words = [
+                    w[4] for w in words
+                    if w[0] < rx1 and w[2] > rx0 and w[1] < ry1 and w[3] > ry0
+                ]
+                if matched_words:
+                    link_text = " ".join(matched_words).strip()
+                else:
+                    link_text = page.get_text("text", clip=rect, textpage=tp).strip()
+
                 if not link_text and uri:
                     link_text = uri
 
@@ -1322,7 +1357,7 @@ class DocumentParser:
                     destination_page=page_dest,
                     alt_text=matched_node.alt_text if matched_node else None,
                     has_structure_link=matched_node is not None,
-                    bbox=(rect.x0, rect.y0, rect.x1, rect.y1) if hasattr(rect, "x0") else tuple(rect)
+                    bbox=(rx0, ry0, rx1, ry1)
                 ))
 
         return links

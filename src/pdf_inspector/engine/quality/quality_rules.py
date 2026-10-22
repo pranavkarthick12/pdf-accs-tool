@@ -496,82 +496,74 @@ class TOCILinkDestinationRule(BaseRule):
 
         fitz_doc = None
         if doc.filepath and os.path.exists(doc.filepath) and dests:
-            try:
-                import pymupdf
-                fitz_doc = pymupdf.open(doc.filepath)
-            except Exception:
-                pass
+            fitz_doc = doc.get_fitz_doc()
 
-        try:
-            for idx, toci in enumerate(toci_nodes):
-                found_heading = False
+        for idx, toci in enumerate(toci_nodes):
+            found_heading = False
 
-                if t_list and idx < len(t_list) and fitz_doc and dests and page_map:
-                    t_elem = t_list[idx]
-                    local_links = []
-                    def find_local_links(e):
-                        s = str(e.get('/S', '')).lstrip('/')
-                        if s in ('TOC', 'TOCI') and e != t_elem:
-                            return
-                        if s == 'Link':
-                            local_links.append(e)
-                        if hasattr(e, 'K'):
-                            k = e.K
-                            if isinstance(k, pikepdf.Array):
-                                for c in k:
-                                    if isinstance(c, (pikepdf.Dictionary, pikepdf.Stream)):
-                                        find_local_links(c)
-                            elif isinstance(k, (pikepdf.Dictionary, pikepdf.Stream)):
-                                find_local_links(k)
+            if t_list and idx < len(t_list) and fitz_doc and dests and page_map:
+                t_elem = t_list[idx]
+                local_links = []
+                def find_local_links(e):
+                    s = str(e.get('/S', '')).lstrip('/')
+                    if s in ('TOC', 'TOCI') and e != t_elem:
+                        return
+                    if s == 'Link':
+                        local_links.append(e)
+                    if hasattr(e, 'K'):
+                        k = e.K
+                        if isinstance(k, pikepdf.Array):
+                            for c in k:
+                                if isinstance(c, (pikepdf.Dictionary, pikepdf.Stream)):
+                                    find_local_links(c)
+                        elif isinstance(k, (pikepdf.Dictionary, pikepdf.Stream)):
+                            find_local_links(k)
 
-                    find_local_links(t_elem)
-                    for lnk in local_links:
-                        if hasattr(lnk, 'K'):
-                            k_items = lnk.K if isinstance(lnk.K, pikepdf.Array) else [lnk.K]
-                            for it in k_items:
-                                if isinstance(it, pikepdf.Dictionary) and it.get('/Type') == '/OBJR':
-                                    annot = it.get('/Obj')
-                                    d_name = None
-                                    if annot and '/A' in annot and '/D' in annot.A:
-                                        d_name = str(annot.A.D)
-                                    elif annot and '/Dest' in annot:
-                                        d_name = str(annot.Dest)
-                                    if d_name and d_name in dests:
-                                        arr = dests[d_name]
-                                        pg = page_map.get(arr[0].objgen)
-                                        if pg and pg <= len(fitz_doc) and (not h_pages or pg in h_pages):
-                                            pdf_top = float(arr[3]) if len(arr) > 3 else 0.0
-                                            if pdf_top >= 150:
-                                                p = fitz_doc[pg - 1]
-                                                pymupdf_y = p.rect.height - pdf_top
-                                                for b in p.get_text('blocks'):
-                                                    txt = b[4].strip()
-                                                    if (abs(b[1] - pymupdf_y) < 50 or (b[1] <= pymupdf_y <= b[3])) and len(txt) < 150:
-                                                        if heading_pattern.match(txt):
-                                                            found_heading = True
-                                                            break
-                                    # Primary link annotation evaluated for this TOCI
-                                    break
-                        if found_heading or lnk:
-                            break
-                else:
-                    # Generic structure-tree fallback when direct PDF stream access is unavailable
-                    local_links = [c for c in toci.children if (c.standard_tag or c.tag or "").upper() == "LINK"]
-                    if not local_links:
-                        local_links = [d for d in toci.find_all_nodes() if d != toci and (d.standard_tag or d.tag or "").upper() == "LINK"]
-                    if local_links:
-                        lnk_node = local_links[0]
-                        dest_target = lnk_node.attributes.get("Dest")
-                        if dest_target:
-                            found_heading = True
+                find_local_links(t_elem)
+                for lnk in local_links:
+                    if hasattr(lnk, 'K'):
+                        k_items = lnk.K if isinstance(lnk.K, pikepdf.Array) else [lnk.K]
+                        for it in k_items:
+                            if isinstance(it, pikepdf.Dictionary) and it.get('/Type') == '/OBJR':
+                                annot = it.get('/Obj')
+                                d_name = None
+                                if annot and '/A' in annot and '/D' in annot.A:
+                                    d_name = str(annot.A.D)
+                                elif annot and '/Dest' in annot:
+                                    d_name = str(annot.Dest)
+                                if d_name and d_name in dests:
+                                    arr = dests[d_name]
+                                    pg = page_map.get(arr[0].objgen)
+                                    if pg and pg <= len(fitz_doc) and (not h_pages or pg in h_pages):
+                                        pdf_top = float(arr[3]) if len(arr) > 3 else 0.0
+                                        if pdf_top >= 150:
+                                            p = fitz_doc[pg - 1]
+                                            pymupdf_y = p.rect.height - pdf_top
+                                            for b in p.get_text('blocks'):
+                                                txt = b[4].strip()
+                                                if (abs(b[1] - pymupdf_y) < 50 or (b[1] <= pymupdf_y <= b[3])) and len(txt) < 150:
+                                                    if heading_pattern.match(txt):
+                                                        found_heading = True
+                                                        break
+                                # Primary link annotation evaluated for this TOCI
+                                break
+                    if found_heading or lnk:
+                        break
+            else:
+                # Generic structure-tree fallback when direct PDF stream access is unavailable
+                local_links = [c for c in toci.children if (c.standard_tag or c.tag or "").upper() == "LINK"]
+                if not local_links:
+                    local_links = [d for d in toci.find_all_nodes() if d != toci and (d.standard_tag or d.tag or "").upper() == "LINK"]
+                if local_links:
+                    lnk_node = local_links[0]
+                    dest_target = lnk_node.attributes.get("Dest")
+                    if dest_target:
+                        found_heading = True
 
-                if found_heading:
-                    valid_count += 1
-                else:
-                    invalid_links.append(toci)
-        finally:
-            if fitz_doc:
-                fitz_doc.close()
+            if found_heading:
+                valid_count += 1
+            else:
+                invalid_links.append(toci)
 
         if invalid_links:
             for toci in invalid_links[:5]:
@@ -1039,25 +1031,26 @@ class LinkCompletenessQualityRule(BaseRule):
 
                 # Scan for untagged / unlinked URL blocks in document body
                 try:
-                    import pymupdf
-                    fitz_doc = pymupdf.open(doc.filepath)
-                    url_pattern = re.compile(r'https?://[^\s<>\"\'\)]+')
-                    for pno, page in enumerate(fitz_doc):
-                        page_links = page.get_links()
-                        text = page.get_text()
-                        found_urls = set()
-                        for m in url_pattern.finditer(text):
-                            u = m.group(0).rstrip('.,;:')
-                            if not any(l.get('uri') and u in l.get('uri') for l in page_links):
-                                found_urls.add(u)
-                        if found_urls:
-                            incomplete_links.append({
-                                'message': f"Page {pno + 1} contains unlinked URL text without an associated Link tag.",
-                                'evidence': f"Unlinked URL: {sorted(found_urls)[0]}",
-                                'page': pno + 1,
-                                'ref': f"Page {pno + 1}"
-                            })
-                    fitz_doc.close()
+                    fitz_doc = doc.get_fitz_doc()
+                    if fitz_doc is not None:
+                        url_pattern = re.compile(r'https?://[^\s<>\"\'\)]+')
+                        for pno, page in enumerate(fitz_doc):
+                            text = doc.pages[pno].text if pno < len(doc.pages) and doc.pages[pno].text else ""
+                            if "http://" not in text and "https://" not in text:
+                                continue
+                            page_links = page.get_links()
+                            found_urls = set()
+                            for m in url_pattern.finditer(text):
+                                u = m.group(0).rstrip('.,;:')
+                                if not any(l.get('uri') and u in l.get('uri') for l in page_links):
+                                    found_urls.add(u)
+                            if found_urls:
+                                incomplete_links.append({
+                                    'message': f"Page {pno + 1} contains unlinked URL text without an associated Link tag.",
+                                    'evidence': f"Unlinked URL: {sorted(found_urls)[0]}",
+                                    'page': pno + 1,
+                                    'ref': f"Page {pno + 1}"
+                                })
                 except Exception:
                     pass
             except Exception:
@@ -1165,77 +1158,14 @@ class TaggedTextOnlyWhitespaceQualityRule(BaseRule):
 
     def _decode_page_mcid_texts(self, filepath: str, page_num: int) -> Dict[int, str]:
         try:
+            from pdf_inspector.core.document_parser import DocumentParser
             import pikepdf
             if not os.path.exists(filepath):
                 return {}
             with pikepdf.open(filepath) as pdf:
                 if page_num < 1 or page_num > len(pdf.pages):
                     return {}
-                page_obj = pdf.pages[page_num - 1]
-
-                # Parse font CMaps on page
-                page_cmaps: Dict[str, Dict[int, str]] = {}
-                if "/Resources" in page_obj and "/Font" in page_obj.Resources:
-                    for f_name, f_obj in page_obj.Resources.Font.items():
-                        fn_str = str(f_name).strip("/")
-                        if "/ToUnicode" in f_obj:
-                            try:
-                                page_cmaps[fn_str] = self._parse_tounicode_cmap(f_obj.ToUnicode.read_bytes())
-                            except Exception:
-                                pass
-
-                ops = pikepdf.parse_content_stream(page_obj)
-                stack: List[Tuple[str, Optional[int]]] = []
-                current_font = None
-                mcid_chars: Dict[int, List[str]] = {}
-
-                for operands, operator in ops:
-                    op = str(operator)
-                    if op == "Tf":
-                        if operands and len(operands) >= 1:
-                            current_font = str(operands[0]).strip("/")
-                    elif op == "BDC":
-                        tag = str(operands[0]).strip("/") if operands else "Span"
-                        props = operands[1] if len(operands) > 1 else None
-                        mcid = None
-                        if isinstance(props, pikepdf.Dictionary) and "/MCID" in props:
-                            mcid = int(props["/MCID"])
-                        stack.append((tag, mcid))
-                    elif op == "BMC":
-                        tag = str(operands[0]).strip("/") if operands else "Span"
-                        stack.append((tag, None))
-                    elif op == "EMC":
-                        if stack:
-                            stack.pop()
-                    elif op in ("Tj", "'", "\"", "TJ"):
-                        curr_mcid = next((m for t, m in reversed(stack) if m is not None), None)
-                        if curr_mcid is not None:
-                            if curr_mcid not in mcid_chars:
-                                mcid_chars[curr_mcid] = []
-                            cmap = page_cmaps.get(current_font, {})
-                            raw_items: List[bytes] = []
-                            if op in ("Tj", "'", "\""):
-                                if operands and isinstance(operands[0], (pikepdf.String, bytes)):
-                                    raw_items.append(bytes(operands[0]))
-                            elif op == "TJ":
-                                if operands and isinstance(operands[0], pikepdf.Array):
-                                    for item in operands[0]:
-                                        if isinstance(item, (pikepdf.String, bytes)):
-                                            raw_items.append(bytes(item))
-
-                            for b in raw_items:
-                                if cmap:
-                                    if len(b) % 2 == 0:
-                                        for i in range(0, len(b), 2):
-                                            code = int.from_bytes(b[i:i+2], 'big')
-                                            mcid_chars[curr_mcid].append(cmap.get(code, chr(code) if code < 256 else ""))
-                                    else:
-                                        for byte_val in b:
-                                            mcid_chars[curr_mcid].append(cmap.get(byte_val, chr(byte_val)))
-                                else:
-                                    mcid_chars[curr_mcid].append(b.decode("latin1", errors="ignore"))
-
-                return {mc: "".join(chars) for mc, chars in mcid_chars.items()}
+                return DocumentParser._decode_page_mcid_texts(pdf.pages[page_num - 1], {})
         except Exception:
             return {}
 

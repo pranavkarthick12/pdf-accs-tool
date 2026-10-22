@@ -462,6 +462,100 @@ class PDFDocumentModel:
             occs.extend(p.content_occurrences)
         return occs
 
+    def get_fitz_doc(self):
+        """Returns a cached, lazily opened PyMuPDF Document handle for audit rules."""
+        if not hasattr(self, "_fitz_doc") or self._fitz_doc is None or getattr(self._fitz_doc, "is_closed", True):
+            if self.filepath:
+                try:
+                    import pymupdf
+                    self._fitz_doc = pymupdf.open(self.filepath)
+                except Exception:
+                    self._fitz_doc = None
+            else:
+                self._fitz_doc = None
+        return self._fitz_doc
+
+    def close_fitz_doc(self):
+        """Safely closes the cached PyMuPDF handle."""
+        if hasattr(self, "_fitz_doc") and self._fitz_doc is not None:
+            try:
+                if not getattr(self._fitz_doc, "is_closed", False):
+                    self._fitz_doc.close()
+            except Exception:
+                pass
+            self._fitz_doc = None
+
+    def _normalize_page_num(self, page_arg, idx_arg=None) -> int:
+        if idx_arg is not None:
+            return idx_arg + 1
+        return int(page_arg)
+
+    def get_page_drawings(self, page_arg: Any, idx_arg: Optional[int] = None):
+        """Returns cached vector drawings for a given 1-based page number or (fitz_doc, pno)."""
+        page_num = self._normalize_page_num(page_arg, idx_arg)
+        if not hasattr(self, "_page_drawings_cache"):
+            self._page_drawings_cache = {}
+        if page_num not in self._page_drawings_cache:
+            fitz_doc = self.get_fitz_doc()
+            if fitz_doc and 1 <= page_num <= len(fitz_doc):
+                try:
+                    self._page_drawings_cache[page_num] = fitz_doc[page_num - 1].get_drawings()
+                except Exception:
+                    self._page_drawings_cache[page_num] = []
+            else:
+                self._page_drawings_cache[page_num] = []
+        return self._page_drawings_cache[page_num]
+
+    def get_page_filled_drawings(self, page_arg: Any, idx_arg: Optional[int] = None):
+        """Returns pre-filtered filled vector drawing tuples (Rect, fill_rgb, sub_rects) for fast O(1) contrast lookups."""
+        page_num = self._normalize_page_num(page_arg, idx_arg)
+        if not hasattr(self, "_page_filled_drawings_cache"):
+            self._page_filled_drawings_cache = {}
+        if page_num not in self._page_filled_drawings_cache:
+            drawings = self.get_page_drawings(page_num)
+            filled = []
+            if drawings:
+                import pymupdf
+                for dr in reversed(drawings):
+                    fill = dr.get("fill")
+                    if fill is None:
+                        continue
+                    rect = dr.get("rect")
+                    if not rect:
+                        continue
+                    dr_rect = pymupdf.Rect(rect)
+                    if len(fill) == 3:
+                        fill_rgb = (int(round(fill[0] * 255)), int(round(fill[1] * 255)), int(round(fill[2] * 255)))
+                    elif len(fill) == 1:
+                        g = int(round(fill[0] * 255))
+                        fill_rgb = (g, g, g)
+                    elif len(fill) == 4:
+                        c, m, y, k = fill
+                        fill_rgb = (int(round(255 * (1 - c) * (1 - k))), int(round(255 * (1 - m) * (1 - k))), int(round(255 * (1 - y) * (1 - k))))
+                    else:
+                        continue
+                    sub_rects = [pymupdf.Rect(it[1]) for it in dr.get("items", []) if it[0] == "re"]
+                    filled.append((dr_rect, fill_rgb, sub_rects))
+            self._page_filled_drawings_cache[page_num] = filled
+        return self._page_filled_drawings_cache[page_num]
+
+    def get_page_text_dict(self, page_arg: Any, idx_arg: Optional[int] = None):
+        """Returns cached page text dictionary for a given 1-based page number or (fitz_doc, pno)."""
+        page_num = self._normalize_page_num(page_arg, idx_arg)
+        if not hasattr(self, "_page_text_dict_cache"):
+            self._page_text_dict_cache = {}
+        if page_num not in self._page_text_dict_cache:
+            fitz_doc = self.get_fitz_doc()
+            if fitz_doc and 1 <= page_num <= len(fitz_doc):
+                try:
+                    self._page_text_dict_cache[page_num] = fitz_doc[page_num - 1].get_text("dict")
+                except Exception:
+                    self._page_text_dict_cache[page_num] = {}
+            else:
+                self._page_text_dict_cache[page_num] = {}
+        return self._page_text_dict_cache[page_num]
+
+
 
 @dataclass
 class AuditReport:

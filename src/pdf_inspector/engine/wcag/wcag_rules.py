@@ -377,12 +377,12 @@ def _channel_lum(val: float) -> float:
     return val / 12.92 if val <= 0.04045 else ((val + 0.055) / 1.055) ** 2.4
 
 
+_LUM_TABLE = tuple(_channel_lum(i / 255.0) for i in range(256))
+
+
 def _calc_lum(r: int, g: int, b: int) -> float:
-    """Calculates relative luminance for an sRGB color (0-255)."""
-    r_lin = _channel_lum(r / 255.0)
-    g_lin = _channel_lum(g / 255.0)
-    b_lin = _channel_lum(b / 255.0)
-    return 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin
+    """Calculates relative luminance for an sRGB color (0-255) using precomputed table."""
+    return 0.2126 * _LUM_TABLE[r] + 0.7152 * _LUM_TABLE[g] + 0.0722 * _LUM_TABLE[b]
 
 
 def _contrast_ratio(fg: Tuple[int, int, int], bg: Tuple[int, int, int]) -> float:
@@ -394,63 +394,71 @@ def _contrast_ratio(fg: Tuple[int, int, int], bg: Tuple[int, int, int]) -> float
     return (lighter + 0.05) / (darker + 0.05)
 
 
-def _resolve_bg_color(page, bbox, fg: Tuple[int, int, int], drawings: List[Any]) -> Tuple[int, int, int]:
+def _resolve_bg_color(page, bbox, fg: Tuple[int, int, int], drawings: Optional[List[Any]] = None, filled_drawings: Optional[List[Any]] = None) -> Tuple[int, int, int]:
     """
     Resolves background color behind a text span bbox on a PyMuPDF page.
     Checks filled vector drawing paths and pixel pixmap sampling when necessary.
     """
-    import pymupdf
     white = (255, 255, 255)
 
-    # 1. Check vector drawings in reverse z-order (topmost first)
-    for dr in reversed(drawings):
-        fill = dr.get("fill")
-        if fill is None:
-            continue
-        rect = dr.get("rect")
-        if not rect:
-            continue
-        dr_rect = pymupdf.Rect(rect)
-        # Background drawing must enclose the text span
-        if dr_rect.contains(bbox) or (bbox in dr_rect):
-            sub_rects = [it[1] for it in dr.get("items", []) if it[0] == "re"]
-            if sub_rects:
-                if not any(pymupdf.Rect(sr).contains(bbox) for sr in sub_rects):
-                    continue
-
+    # 1. Use pre-filtered filled vector drawings in reverse z-order (topmost first)
+    if filled_drawings is None and drawings:
+        import pymupdf
+        filled_drawings = []
+        for dr in reversed(drawings):
+            fill = dr.get("fill")
+            if fill is None:
+                continue
+            rect = dr.get("rect")
+            if not rect:
+                continue
+            dr_rect = pymupdf.Rect(rect)
             if len(fill) == 3:
-                return (int(round(fill[0] * 255)), int(round(fill[1] * 255)), int(round(fill[2] * 255)))
+                fill_rgb = (int(round(fill[0] * 255)), int(round(fill[1] * 255)), int(round(fill[2] * 255)))
             elif len(fill) == 1:
                 g = int(round(fill[0] * 255))
-                return (g, g, g)
+                fill_rgb = (g, g, g)
             elif len(fill) == 4:
                 c, m, y, k = fill
-                r = int(round(255 * (1 - c) * (1 - k)))
-                g = int(round(255 * (1 - m) * (1 - k)))
-                b = int(round(255 * (1 - y) * (1 - k)))
-                return (r, g, b)
+                fill_rgb = (int(round(255 * (1 - c) * (1 - k))), int(round(255 * (1 - m) * (1 - k))), int(round(255 * (1 - y) * (1 - k))))
+            else:
+                continue
+            sub_rects = [pymupdf.Rect(it[1]) for it in dr.get("items", []) if it[0] == "re"]
+            filled_drawings.append((dr_rect, fill_rgb, sub_rects))
+
+    if filled_drawings:
+        for dr_rect, fill_rgb, sub_rects in filled_drawings:
+            if dr_rect.contains(bbox) or (bbox in dr_rect):
+                if sub_rects:
+                    if not any(sr.contains(bbox) for sr in sub_rects):
+                        continue
+                return fill_rgb
 
     # 2. If fg color is dark enough that white background yields compliant contrast, default to white
     if round(_contrast_ratio(fg, white), 2) >= 4.5:
         return white
 
     # 3. For white/light text or indeterminate backgrounds, sample pixels behind or around the text
-    try:
-        sample_rect = pymupdf.Rect(bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2) & page.rect
-        if not sample_rect.is_empty:
-            pix = page.get_pixmap(clip=sample_rect, dpi=72)
-            colors: Dict[Tuple[int, int, int], int] = {}
-            for y in range(pix.height):
-                for x in range(pix.width):
-                    c = pix.pixel(x, y)[:3]
-                    # Exclude text foreground pixels
-                    if abs(c[0] - fg[0]) < 15 and abs(c[1] - fg[1]) < 15 and abs(c[2] - fg[2]) < 15:
+    if page is not None:
+        try:
+            import pymupdf
+            sample_rect = pymupdf.Rect(bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2) & page.rect
+            if not sample_rect.is_empty and sample_rect.width <= 300 and sample_rect.height <= 80:
+                pix = page.get_pixmap(clip=sample_rect, dpi=36)
+                samples = pix.samples
+                n = pix.n
+                colors: Dict[Tuple[int, int, int], int] = {}
+                step = max(n, (len(samples) // 100) * n) # at most 100 sample points
+                for i in range(0, len(samples) - n + 1, step):
+                    r, g, b = samples[i], samples[i+1], samples[i+2]
+                    if abs(r - fg[0]) < 15 and abs(g - fg[1]) < 15 and abs(b - fg[2]) < 15:
                         continue
+                    c = (r, g, b)
                     colors[c] = colors.get(c, 0) + 1
-            if colors:
-                return max(colors.items(), key=lambda it: it[1])[0]
-    except Exception:
-        pass
+                if colors:
+                    return max(colors.items(), key=lambda it: it[1])[0]
+        except Exception:
+            pass
 
     return white
 
@@ -484,80 +492,95 @@ class WCAGContrastMinimumRule(BaseRule):
         failures: List[CheckResult] = []
         evaluated_spans = 0
 
-        if doc.filepath and os.path.exists(doc.filepath):
-            page_artifacts: Dict[int, Set[str]] = {}
-            try:
-                import pikepdf
-                with pikepdf.open(doc.filepath) as pdf:
-                    for pno, p in enumerate(pdf.pages):
-                        art_set = set()
-                        in_artifact = False
-                        for op in pikepdf.parse_content_stream(p):
-                            op_str = str(op.operator)
-                            if op_str in ("BDC", "BMC"):
-                                if len(op.operands) > 0 and str(op.operands[0]) == "/Artifact":
-                                    in_artifact = True
-                            elif op_str == "EMC":
-                                in_artifact = False
-                            elif in_artifact and op_str in ("Tj", "'", '"'):
-                                val = str(op.operands[0]).strip()
-                                if val:
-                                    art_set.add(val)
-                            elif in_artifact and op_str == "TJ":
-                                for item in op.operands[0]:
-                                    if isinstance(item, pikepdf.String):
-                                        val = str(item).strip()
-                                        if val:
-                                            art_set.add(val)
-                        page_artifacts[pno + 1] = art_set
-            except Exception:
-                pass
-
+        fitz_doc = doc.get_fitz_doc() if hasattr(doc, "get_fitz_doc") else None
+        if fitz_doc is None and doc.filepath and os.path.exists(doc.filepath):
             try:
                 import pymupdf
-                with pymupdf.open(doc.filepath) as fitz_doc:
-                    for pno, page in enumerate(fitz_doc):
-                        page_num = pno + 1
-                        art_set = page_artifacts.get(page_num, set())
-                        drawings = page.get_drawings()
-                        d = page.get_text("dict")
-                        for b in d.get("blocks", []):
-                            if b.get("type") != 0:
-                                continue
-                            for l in b.get("lines", []):
-                                for s in l.get("spans", []):
-                                    txt = s.get("text", "").strip()
-                                    if not txt:
-                                        continue
-                                    if txt in art_set:
-                                        continue
-                                    evaluated_spans += 1
-                                    fg_int = s.get("color", 0)
-                                    fg = ((fg_int >> 16) & 0xFF, (fg_int >> 8) & 0xFF, fg_int & 0xFF)
-                                    sz = s.get("size", 10.0)
-                                    flags = s.get("flags", 0)
-                                    is_bold = bool(flags & 2) or ("bold" in s.get("font", "").lower())
-                                    thresh = 3.0 if (sz >= 18.0 or (sz >= 14.0 and is_bold)) else 4.5
+                fitz_doc = pymupdf.open(doc.filepath)
+            except Exception:
+                fitz_doc = None
 
-                                    bbox = pymupdf.Rect(s.get("bbox"))
-                                    bg = _resolve_bg_color(page, bbox, fg, drawings)
+        if fitz_doc:
+            page_artifacts = {p.page_number: getattr(p, "artifact_texts", set()) for p in doc.pages}
+            white = (255, 255, 255)
+            contrast_white_cache: Dict[int, Tuple[Tuple[int, int, int], float]] = {}
+            try:
+                import pymupdf
+                for pno in range(len(fitz_doc)):
+                    page_num = pno + 1
+                    art_set = page_artifacts.get(page_num, set())
+                    page = fitz_doc[pno]
+                    filled_drawings = doc.get_page_filled_drawings(page_num) if hasattr(doc, "get_page_filled_drawings") else None
+                    d = doc.get_page_text_dict(page_num) if hasattr(doc, "get_page_text_dict") else page.get_text("dict")
+                    for b in d.get("blocks", []):
+                        if b.get("type") != 0:
+                            continue
+                        for l in b.get("lines", []):
+                            for s in l.get("spans", []):
+                                txt = s.get("text", "").strip()
+                                if not txt:
+                                    continue
+                                if txt in art_set:
+                                    continue
+                                evaluated_spans += 1
+
+                                fg_int = s.get("color", 0)
+                                if fg_int in contrast_white_cache:
+                                    fg, ratio_white = contrast_white_cache[fg_int]
+                                else:
+                                    fg = ((fg_int >> 16) & 0xFF, (fg_int >> 8) & 0xFF, fg_int & 0xFF)
+                                    ratio_white = _contrast_ratio(fg, white)
+                                    contrast_white_cache[fg_int] = (fg, ratio_white)
+
+                                sz = s.get("size", 10.0)
+                                flags = s.get("flags", 0)
+                                is_bold = bool(flags & 2) or ("bold" in s.get("font", "").lower())
+                                thresh = 3.0 if (sz >= 18.0 or (sz >= 14.0 and is_bold)) else 4.5
+
+                                s_bbox = s.get("bbox", (0, 0, 0, 0))
+                                bg_color = None
+
+                                # Check if span falls inside any filled vector drawing
+                                if filled_drawings:
+                                    bx0, by0, bx1, by1 = s_bbox
+                                    for dr_rect, fill_rgb, sub_rects in filled_drawings:
+                                        if dr_rect.x0 <= bx0 and dr_rect.y0 <= by0 and dr_rect.x1 >= bx1 and dr_rect.y1 >= by1:
+                                            if sub_rects:
+                                                if not any(sr.x0 <= bx0 and sr.y0 <= by0 and sr.x1 >= bx1 and sr.y1 >= by1 for sr in sub_rects):
+                                                    continue
+                                            bg_color = fill_rgb
+                                            break
+
+                                if bg_color is None:
+                                    ratio = ratio_white
+                                    bg = white
+                                else:
+                                    bg = bg_color
                                     ratio = _contrast_ratio(fg, bg)
 
-                                    if round(ratio, 2) < thresh:
-                                        fg_hex = f"{fg[0]:02X}{fg[1]:02X}{fg[2]:02X}"
-                                        bg_hex = f"{bg[0]:02X}{bg[1]:02X}{bg[2]:02X}"
-                                        snippet = txt[:60]
-                                        failures.append(self.create_result(
-                                            status=CheckStatus.FAIL,
-                                            message=f"Text with insufficient contrast (ratio {ratio:.2f}:1, minimum {thresh:.1f}:1 required): '{snippet}'",
-                                            evidence=f"Page {page_num}: text color #{fg_hex}, background #{bg_hex}, ratio {ratio:.2f}:1 against {thresh:.1f}:1 threshold, font size {sz:.1f}pt",
-                                            page=page_num,
-                                            bounding_box=(bbox.x0, bbox.y0, bbox.x1, bbox.y1),
-                                            object_reference=f"Text '{snippet}' on page {page_num}",
-                                            custom_severity=Severity.HIGH,
-                                            custom_remediation=f"Increase contrast of text to at least {thresh:.1f}:1 by darkening the text or lightening the background.",
-                                            items_count=1
-                                        ))
+                                # If contrast fails on white background, perform secondary pixel sampling
+                                # in case text is placed over a dark image or unclassified raster graphic
+                                if round(ratio, 2) < thresh and bg_color is None:
+                                    bbox_rect = pymupdf.Rect(s_bbox)
+                                    bg = _resolve_bg_color(page, bbox_rect, fg, filled_drawings=filled_drawings)
+                                    ratio = _contrast_ratio(fg, bg)
+
+                                if round(ratio, 2) < thresh:
+                                    fg_hex = f"{fg[0]:02X}{fg[1]:02X}{fg[2]:02X}"
+                                    bg_hex = f"{bg[0]:02X}{bg[1]:02X}{bg[2]:02X}"
+                                    snippet = txt[:60]
+                                    bbox_rect = pymupdf.Rect(s_bbox)
+                                    failures.append(self.create_result(
+                                        status=CheckStatus.FAIL,
+                                        message=f"Text with insufficient contrast (ratio {ratio:.2f}:1, minimum {thresh:.1f}:1 required): '{snippet}'",
+                                        evidence=f"Page {page_num}: text color #{fg_hex}, background #{bg_hex}, ratio {ratio:.2f}:1 against {thresh:.1f}:1 threshold, font size {sz:.1f}pt",
+                                        page=page_num,
+                                        bounding_box=(bbox_rect.x0, bbox_rect.y0, bbox_rect.x1, bbox_rect.y1),
+                                        object_reference=f"Text '{snippet}' on page {page_num}",
+                                        custom_severity=Severity.HIGH,
+                                        custom_remediation=f"Increase contrast of text to at least {thresh:.1f}:1 by darkening the text or lightening the background.",
+                                        items_count=1
+                                    ))
             except Exception as e:
                 logger.warning(f"Error during contrast evaluation with PyMuPDF: {e}")
         else:
@@ -624,35 +647,50 @@ class WCAGUseOfColorRule(BaseRule):
         if not doc.is_tagged and total_stream_strings == 0 and not has_page_text:
             return []
 
+        if not getattr(doc, "links", []):
+            return []
+
         failures: List[CheckResult] = []
         total_links = 0
 
         if doc.filepath and os.path.exists(doc.filepath):
             try:
                 import pymupdf
-                with pymupdf.open(doc.filepath) as fitz_doc:
+                fitz_doc = doc.get_fitz_doc()
+                if fitz_doc is not None:
                     for pno, page in enumerate(fitz_doc):
                         page_num = pno + 1
+                        if pno < len(doc.pages) and doc.pages[pno].links_count == 0:
+                            continue
                         links = page.get_links()
                         if not links:
                             continue
 
-                        drawings = page.get_drawings()
-                        d = page.get_text("dict")
+                        drawings = doc.get_page_drawings(fitz_doc, pno)
+                        underline_rects = [
+                            (dr["rect"][0], dr["rect"][1], dr["rect"][2], dr["rect"][3])
+                            for dr in drawings
+                            if dr.get("rect") and (dr["rect"][3] - dr["rect"][1]) <= 3.0
+                        ]
+                        d = doc.get_page_text_dict(fitz_doc, pno)
                         all_spans = []
                         for b in d.get("blocks", []):
                             if b.get("type") == 0:
                                 for l in b.get("lines", []):
                                     for s in l.get("spans", []):
                                         if s.get("text", "").strip():
-                                            all_spans.append(s)
+                                            sb = s.get("bbox", (0, 0, 0, 0))
+                                            all_spans.append((sb[0], sb[1], sb[2], sb[3], s))
 
                         for link in links:
                             rect = link.get("from")
                             if not rect:
                                 continue
-                            link_rect = pymupdf.Rect(rect)
-                            intersecting = [s for s in all_spans if pymupdf.Rect(s.get("bbox")).intersects(link_rect)]
+                            rx0, ry0, rx1, ry1 = (rect.x0, rect.y0, rect.x1, rect.y1) if hasattr(rect, "x0") else rect
+                            intersecting = [
+                                s for sx0, sy0, sx1, sy1, s in all_spans
+                                if sx0 < rx1 and sx1 > rx0 and sy0 < ry1 and sy1 > ry0
+                            ]
                             if not intersecting:
                                 continue
 
@@ -666,13 +704,11 @@ class WCAGUseOfColorRule(BaseRule):
                                 has_underline = True
 
                             # 2. Vector underline drawing beneath link text
-                            if not has_underline and drawings:
-                                for dr in drawings:
-                                    dr_rect = pymupdf.Rect(dr.get("rect", [0, 0, 0, 0]))
-                                    if dr_rect.height <= 3.0 and abs(dr_rect.y1 - link_rect.y1) <= 4.0:
-                                        if dr_rect.x0 <= link_rect.x1 and dr_rect.x1 >= link_rect.x0:
-                                            has_underline = True
-                                            break
+                            if not has_underline and underline_rects:
+                                for ux0, uy0, ux1, uy1 in underline_rects:
+                                    if abs(uy1 - ry1) <= 4.0 and ux0 <= rx1 and ux1 >= rx0:
+                                        has_underline = True
+                                        break
 
                             # 3. Distinct styling (bold, italic, font variant)
                             has_distinct_font = any(
@@ -686,9 +722,9 @@ class WCAGUseOfColorRule(BaseRule):
 
                             # 4. Contrast against surrounding non-link body text
                             surrounding = [
-                                s for s in all_spans
-                                if not pymupdf.Rect(s.get("bbox")).intersects(link_rect) and
-                                abs(s.get("bbox")[1] - link_rect.y0) <= 20.0
+                                s for sx0, sy0, sx1, sy1, s in all_spans
+                                if not (sx0 < rx1 and sx1 > rx0 and sy0 < ry1 and sy1 > ry0) and
+                                abs(sy0 - ry0) <= 20.0
                             ]
                             if surrounding:
                                 link_color_int = intersecting[0].get("color", 0)
@@ -704,7 +740,7 @@ class WCAGUseOfColorRule(BaseRule):
                                         message=f"Link text relies solely on color to distinguish it from surrounding body text (contrast ratio {color_contrast:.2f}:1 against body text is below 3.0:1): '{link_text}'",
                                         evidence=f"Page {page_num}: link color #{link_hex}, body text color #{body_hex}, contrast ratio {color_contrast:.2f}:1, no underline or distinct font styling.",
                                         page=page_num,
-                                        bounding_box=(link_rect.x0, link_rect.y0, link_rect.x1, link_rect.y1),
+                                        bounding_box=(rx0, ry0, rx1, ry1),
                                         object_reference=f"Link '{link_text}' on page {page_num}",
                                         custom_severity=Severity.HIGH,
                                         custom_remediation="Add an underline or distinct font weight/style to the link so it does not rely solely on color.",
@@ -787,6 +823,9 @@ class WCAGNonTextContrastRule(BaseRule):
         if not doc.is_tagged and total_stream_strings == 0 and not has_page_text:
             return []
 
+        if not getattr(doc, "form_fields", []):
+            return []
+
         failures: List[CheckResult] = []
         total_widgets = 0
 
@@ -794,14 +833,20 @@ class WCAGNonTextContrastRule(BaseRule):
             try:
                 import pymupdf
                 white = (255, 255, 255)
-                with pymupdf.open(doc.filepath) as fitz_doc:
-                    for pno, page in enumerate(fitz_doc):
+                fitz_doc = doc.get_fitz_doc()
+                if fitz_doc is not None:
+                    pages_with_forms = {ff.page - 1 for ff in doc.form_fields if ff.page}
+                    for pno in sorted(pages_with_forms):
+                        if pno < 0 or pno >= len(fitz_doc):
+                            continue
+                        page = fitz_doc[pno]
                         page_num = pno + 1
                         widgets = list(page.widgets())
                         if not widgets:
                             continue
 
-                        drawings = page.get_drawings()
+                        filled_drawings = doc.get_page_filled_drawings(fitz_doc, pno)
+                        all_drawings = doc.get_page_drawings(fitz_doc, pno)
                         for w in widgets:
                             total_widgets += 1
                             r = w.rect
@@ -811,7 +856,7 @@ class WCAGNonTextContrastRule(BaseRule):
                             bc = w.border_color
                             if bc is not None:
                                 bc_rgb = (int(round(bc[0]*255)), int(round(bc[1]*255)), int(round(bc[2]*255))) if len(bc) >= 3 else (int(round(bc[0]*255)),)*3
-                                bg = _resolve_bg_color(page, r, bc_rgb, drawings)
+                                bg = _resolve_bg_color(page, r, bc_rgb, filled_drawings)
                                 ratio = _contrast_ratio(bc_rgb, bg)
                                 if round(ratio, 2) < 3.0:
                                     bc_hex = f"{bc_rgb[0]:02X}{bc_rgb[1]:02X}{bc_rgb[2]:02X}"
@@ -853,8 +898,8 @@ class WCAGNonTextContrastRule(BaseRule):
 
                             # 3. Check for vector drawings bordering or enclosing the widget
                             has_border_drawing = False
-                            if drawings:
-                                for dr in drawings:
+                            if all_drawings:
+                                for dr in all_drawings:
                                     dr_rect = pymupdf.Rect(dr.get("rect", [0, 0, 0, 0]))
                                     if dr_rect.intersects(r):
                                         has_border_drawing = True

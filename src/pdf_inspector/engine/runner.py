@@ -40,28 +40,33 @@ class AuditRunner:
         results: List[CheckResult] = []
         total_rules = len(self.rules)
 
-        for idx, rule in enumerate(self.rules, start=1):
-            if progress_callback:
-                progress_callback(idx, total_rules, f"Checking {rule.name}...")
+        try:
+            for idx, rule in enumerate(self.rules, start=1):
+                if progress_callback:
+                    progress_callback(idx, total_rules, f"Checking {rule.name}...")
 
-            try:
-                rule_results = rule.evaluate(doc)
-                results.extend(rule_results)
-            except Exception as e:
-                logger.exception(f"Error running rule {rule.rule_id} ({rule.name}): {e}")
-                results.append(CheckResult(
-                    check_id=rule.rule_id,
-                    name=rule.name,
-                    category=rule.category,
-                    standard=rule.standard,
-                    status=CheckStatus.ERROR,
-                    severity=Severity.HIGH,
-                    message=f"Checker error during evaluation: {str(e)}",
-                    description=rule.description,
-                    evidence=f"Internal rule exception: {type(e).__name__}: {str(e)}",
-                    remediation=rule.remediation_template,
-                    confidence=0.5
-                ))
+                try:
+                    rule_results = rule.evaluate(doc)
+                    results.extend(rule_results)
+                except Exception as e:
+                    logger.exception(f"Error running rule {rule.rule_id} ({rule.name}): {e}")
+                    results.append(CheckResult(
+                        check_id=rule.rule_id,
+                        name=rule.name,
+                        category=rule.category,
+                        standard=rule.standard,
+                        status=CheckStatus.ERROR,
+                        severity=Severity.HIGH,
+                        message=f"Checker error during evaluation: {str(e)}",
+                        description=rule.description,
+                        evidence=f"Internal rule exception: {type(e).__name__}: {str(e)}",
+                        remediation=rule.remediation_template,
+                        confidence=0.5
+                    ))
+        finally:
+            if hasattr(doc, "close_fitz_doc"):
+                doc.close_fitz_doc()
+
 
         doc_info = {
             "filename": doc.filename,
