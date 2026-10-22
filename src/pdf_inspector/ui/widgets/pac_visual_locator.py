@@ -69,8 +69,11 @@ class PACVisualCanvas(QWidget):
         self.finding = finding
         self._zoom_factor = zoom
 
-        # Pinpoint precise bounding box using VisualLocatorResolver
-        self.bbox = VisualLocatorResolver.resolve_bbox(self.doc, self.page_num, self.finding, self.doc_model)
+        # Pinpoint precise bounding box using explicit bbox or VisualLocatorResolver
+        if bbox and len(bbox) == 4:
+            self.bbox = bbox
+        else:
+            self.bbox = VisualLocatorResolver.resolve_bbox(self.doc, self.page_num, self.finding, self.doc_model)
         self._render_elements()
         self.update()
 
@@ -398,7 +401,12 @@ class PACVisualLocatorWidget(QWidget):
         """Loads a CheckResult and immediately renders PAC visual locator."""
         self.current_finding = finding
         target_page = page_num or finding.page or 1
-        target_bbox = bbox or finding.bounding_box
+        if bbox is not None:
+            target_bbox = bbox
+        elif finding.page is None or finding.page == target_page:
+            target_bbox = finding.bounding_box
+        else:
+            target_bbox = None
 
         # Format header title matching PAC
         title_text = finding.message or finding.name

@@ -156,6 +156,15 @@ def test_detailed_results_content_redirection_isolation():
     view.search_input.clear()
     assert len(view.filtered_findings) == 8
 
+    # 7. Test clicking "All" button resets category filter and standard filter to display all findings
+    view.filter_by_category("PDF/UA", "Content")
+    assert len(view.filtered_findings) == 4
+    view.btn_all.click()
+    assert len(view.filtered_findings) == 8
+    assert view.category_filter is None
+    assert view.combo_std.currentText() == "All Standards"
+    assert view.search_input.text() == ""
+
 
 def test_checkpoints_btn_detail_resolves_selected_category():
     checkpoints = CheckpointsView()

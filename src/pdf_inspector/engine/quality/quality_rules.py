@@ -912,23 +912,59 @@ class ArtifactedContentOnPageBodyRule(BaseRule):
     description = "Body text paragraphs must not be marked as artifacts unless strictly decorative."
     remediation_template = "Verify that body text paragraphs and narrative content are properly tagged and not marked as artifacts."
 
-    MATH_OR_CODE_SYMBOLS = set("∈∉⊂⊆∪∩×÷√∫∑∏∂∇∆ΔθλωΩπ≤≥≠≈≡±∓∞→↔⇒⇔{}[]^_\\~|")
+    MATH_OR_CODE_SYMBOLS = set("∈∉⊂⊆∪∩×÷√∫∑∏∂∇∆ΔθλωΩπ≤≥≠≈≡±∓∞→↔⇒⇔{}[]^\\~|")
+    PAGINATION_HEADER_RE = re.compile(
+        r'^(page\s*\d+(\s+of\s+\d+)?|\d+(\s+of\s+\d+)?|chapter\s*\d+|section\s*\d+|\d*\s*unit\s*\d+.*|[A-Za-z\s]+\s+\d{1,4}|\d{1,4}\s+[A-Za-z\s]+.*)$',
+        re.IGNORECASE
+    )
 
     def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
         results = []
         if not doc.all_artifacts:
             return results
 
+        # 1. Collect pages with Figure structure elements (PAC excludes artifacts on pages with Figures)
+        figure_pages = set()
+        if doc.structure_tree:
+            for n in doc.structure_tree.find_all_nodes():
+                if (n.standard_tag or "").upper() == "FIGURE" and n.page:
+                    figure_pages.add(n.page)
+
+        pages_map = {p.page_number: p for p in doc.pages}
+
         body_artifacts = []
         for art in doc.all_artifacts:
             txt = (art.text_snippet or "").strip()
-            if txt and not txt.startswith("Artifact in Form XObject"):
-                is_pagination = bool(re.match(r'^(page\s*\d+(\s+of\s+\d+)?|\d+(\s+of\s+\d+)?|chapter\s*\d+|section\s*\d+)$', txt, re.IGNORECASE))
-                if not is_pagination:
-                    has_math_symbols = any(ch in self.MATH_OR_CODE_SYMBOLS for ch in txt)
-                    words = [w for w in re.split(r'\s+', txt) if len(w) > 1 and w.isalpha()]
-                    if not has_math_symbols and len(words) >= 4 and len(txt) > 20:
-                        body_artifacts.append(art)
+            if not txt or txt.startswith("Artifact in Form XObject"):
+                continue
+
+            # Must contain at least one alphabetical letter (PAC: char.IsLetter)
+            if not any(c.isalpha() for c in txt):
+                continue
+
+            # Running headers / footers / pagination are legitimate artifacts (unless file slugs like .indd)
+            if ".indd" not in txt.lower() and self.PAGINATION_HEADER_RE.match(txt):
+                continue
+
+            if any(ch in self.MATH_OR_CODE_SYMBOLS for ch in txt):
+                continue
+
+            # Body rectangle check: PAC uses 15% top and bottom margin (0.15 * height to 0.85 * height)
+            page = pages_map.get(art.page_number)
+            height = page.height if page else 792.0
+            min_y = 0.15 * height
+            max_y = 0.85 * height
+
+            if art.bbox:
+                y = art.bbox[1]
+                if not (min_y <= y <= max_y):
+                    continue
+
+            # Artifacts on pages with Figure structure elements are treated as figure content/labels in PAC
+            if art.page_number in figure_pages:
+                continue
+
+            body_artifacts.append(art)
 
         if body_artifacts:
             for art in body_artifacts[:5]:

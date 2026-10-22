@@ -395,6 +395,7 @@ class DocumentParser:
                 r'|(?P<paint>\b(?:sh|f\*|b\*|B\*|f|F|S|s|B|b)\b)',
                 re.DOTALL
             )
+            TM_RE = re.compile(r'([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+Tm\b')
 
             doc_stream_text_count = 0
 
@@ -518,23 +519,27 @@ class DocumentParser:
                                 in_tagged = (tagged_depth > 0)
                                 in_art = (art_depth > 0)
 
+                                art_model = None
                                 if is_art:
                                     if in_tagged:
                                         art_in_tagged_count += 1
                                         ancestor = next(s for s in reversed(stack) if s["mcid"] is not None)
-                                        page_artifacts.append(ArtifactOccurrenceModel(
+                                        art_model = ArtifactOccurrenceModel(
                                             page_number=page_idx,
                                             is_inside_tagged=True,
                                             parent_tag=ancestor["tag"],
                                             parent_mcid=ancestor["mcid"],
                                             bbox=None,
                                             text_snippet=""
-                                        ))
+                                        )
                                     else:
-                                        page_artifacts.append(ArtifactOccurrenceModel(
+                                        art_model = ArtifactOccurrenceModel(
                                             page_number=page_idx,
-                                            is_inside_tagged=False
-                                        ))
+                                            is_inside_tagged=False,
+                                            bbox=None,
+                                            text_snippet=""
+                                        )
+                                    page_artifacts.append(art_model)
                                 else:
                                     if in_art and mcid is not None:
                                         tagged_in_art_count += 1
@@ -551,7 +556,7 @@ class DocumentParser:
                                     tagged_depth += 1
                                 if is_art:
                                     art_depth += 1
-                                stack.append({"tag": tag, "mcid": mcid, "is_artifact": is_art})
+                                stack.append({"tag": tag, "mcid": mcid, "is_artifact": is_art, "art_model": art_model})
 
                             elif m.group("bmc"):
                                 bmc_m = re.match(r"/(\w+)\s*BMC", m.group("bmc"))
@@ -560,27 +565,31 @@ class DocumentParser:
                                 in_tagged = (tagged_depth > 0)
                                 in_art = (art_depth > 0)
 
+                                art_model = None
                                 if is_art:
                                     if in_tagged:
                                         art_in_tagged_count += 1
                                         ancestor = next(s for s in reversed(stack) if s["mcid"] is not None)
-                                        page_artifacts.append(ArtifactOccurrenceModel(
+                                        art_model = ArtifactOccurrenceModel(
                                             page_number=page_idx,
                                             is_inside_tagged=True,
                                             parent_tag=ancestor["tag"],
                                             parent_mcid=ancestor["mcid"],
                                             bbox=None,
                                             text_snippet=""
-                                        ))
+                                        )
                                     else:
-                                        page_artifacts.append(ArtifactOccurrenceModel(
+                                        art_model = ArtifactOccurrenceModel(
                                             page_number=page_idx,
-                                            is_inside_tagged=False
-                                        ))
+                                            is_inside_tagged=False,
+                                            bbox=None,
+                                            text_snippet=""
+                                        )
+                                    page_artifacts.append(art_model)
 
                                 if is_art:
                                     art_depth += 1
-                                stack.append({"tag": tag, "mcid": None, "is_artifact": is_art})
+                                stack.append({"tag": tag, "mcid": None, "is_artifact": is_art, "art_model": art_model})
 
                             elif m.group("emc"):
                                 if stack:
@@ -598,10 +607,25 @@ class DocumentParser:
                                     tagged_ops_count += 1
                                 elif in_art:
                                     art_ops_count += 1
+                                    active_art = next((s["art_model"] for s in reversed(stack) if s.get("art_model")), None)
                                     for s_match in re.findall(r"\(([^)]*)\)", tj_txt):
-                                        s_val = s_match.strip()
-                                        if s_val:
-                                            page_artifact_texts.add(s_val)
+                                        cleaned = re.sub(r"\\[0-7]{1,3}", "", s_match)
+                                        cleaned = re.sub(r"\\[nrtbf\\()]", "", cleaned).strip()
+                                        if cleaned:
+                                            page_artifact_texts.add(cleaned)
+                                            if active_art:
+                                                if active_art.text_snippet:
+                                                    active_art.text_snippet += " " + cleaned
+                                                else:
+                                                    active_art.text_snippet = cleaned
+                                    if active_art and active_art.bbox is None:
+                                        chunk = stream_text[max(0, m.start() - 400):m.start()]
+                                        tm_matches = list(TM_RE.finditer(chunk))
+                                        if tm_matches:
+                                            last_tm = tm_matches[-1]
+                                            x_pt = float(last_tm.group(5))
+                                            y_pt = float(last_tm.group(6))
+                                            active_art.bbox = (x_pt, y_pt, x_pt + 10.0, y_pt + 10.0)
                                 else:
                                     # Text operator executed outside of any marked content sequence
                                     unmarked_count += 1

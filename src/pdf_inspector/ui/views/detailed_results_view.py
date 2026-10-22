@@ -62,7 +62,8 @@ class DetailedResultsView(QWidget):
         self.filter_group.addButton(self.btn_warn)
         self.filter_group.addButton(self.btn_manual)
         self.filter_group.addButton(self.btn_pass)
-        self.filter_group.buttonClicked.connect(self._apply_filters)
+        self.btn_all.clicked.connect(self._on_all_clicked)
+        self.filter_group.buttonClicked.connect(self._on_filter_group_clicked)
 
         filter_bar.addWidget(self.btn_all)
         filter_bar.addWidget(self.btn_fail)
@@ -83,6 +84,7 @@ class DetailedResultsView(QWidget):
         # Search Input
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("🔍 Search findings (Rule ID, message, evidence)...")
+        self.search_input.setClearButtonEnabled(True)
         self.search_input.setMinimumWidth(100)
         self.search_input.setMaximumWidth(280)
         self.search_input.textChanged.connect(self._apply_filters)
@@ -122,6 +124,29 @@ class DetailedResultsView(QWidget):
         self.lbl_count = QLabel("Showing 0 findings")
         self.lbl_count.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(self.lbl_count)
+
+    def _on_all_clicked(self):
+        """When user clicks 'All' button, clear all category, rule, standard and search filters to show all findings."""
+        self._programmatic_change = True
+        try:
+            self.category_filter = None
+            self.rule_ids_filter = None
+            self.combo_std.setCurrentText("All Standards")
+            self.search_input.clear()
+            self.btn_all.setChecked(True)
+        finally:
+            self._programmatic_change = False
+        self._apply_filters()
+
+    def _on_filter_group_clicked(self, button):
+        if button == self.btn_all:
+            self._on_all_clicked()
+        else:
+            self._apply_filters()
+
+    def reset_filters(self):
+        """Resets all filters to show all findings across the entire file."""
+        self._on_all_clicked()
 
     def _on_std_filter_changed(self, text: str):
         if not self._programmatic_change:

@@ -479,10 +479,14 @@ class CheckpointsView(QWidget):
             self.lbl_pdfua_banner.setText("This PDF file is PDF/UA compliant.")
             self.lbl_pdfua_banner.setStyleSheet("font-size: 13px; font-weight: bold; color: #15803d; padding: 4px 2px;")
 
+        art_body_counts = quality_counts.get("Artifacted content on page body", {})
+        has_art_body_issue = (art_body_counts.get("warned", 0) > 0 or art_body_counts.get("failed", 0) > 0)
+        sad_emoji = "🙁 " if has_art_body_issue else ""
+
         quality_failed = sum(c.get("failed", 0) for c in quality_counts.values())
         quality_warned = sum(c.get("warned", 0) for c in quality_counts.values())
         if quality_failed > 0 or quality_warned > 0:
-            self.lbl_quality_banner.setText("This document has potential quality issues.")
+            self.lbl_quality_banner.setText(f"{sad_emoji}This document has potential quality issues.")
             self.lbl_quality_banner.setStyleSheet("font-size: 13px; font-weight: bold; color: #b45309; padding: 4px 2px;")
         else:
             self.lbl_quality_banner.setText("This document has no quality issues.")

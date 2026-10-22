@@ -14,9 +14,9 @@ from PySide6.QtWidgets import (
     QStackedWidget, QButtonGroup
 )
 from PySide6.QtCore import Qt, Signal, QRectF
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QBrush
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QBrush, QIntValidator
 
-from ...core.models import CheckResult
+from ...core.models import CheckResult, CheckStatus
 from .pac_visual_locator import PACVisualLocatorWidget
 
 
@@ -145,22 +145,69 @@ class PDFCanvas(QWidget):
 
         self.toolbar.addSeparator()
 
-        # Navigation
+        # Navigation controls with modern UI/UX styling
+        nav_btn_style = """
+            QPushButton {
+                background-color: #ffffff;
+                color: #0f172a;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #f1f5f9;
+                border-color: #94a3b8;
+            }
+            QPushButton:pressed {
+                background-color: #e2e8f0;
+            }
+            QPushButton:disabled {
+                background-color: #f8fafc;
+                color: #94a3b8;
+                border-color: #e2e8f0;
+            }
+        """
+
         self.btn_prev = QPushButton("◀ Prev Page")
+        self.btn_prev.setStyleSheet(nav_btn_style)
+        self.btn_prev.setToolTip("Previous Page (Left Arrow / Page Up)")
+        self.btn_prev.setEnabled(False)
         self.btn_prev.clicked.connect(self.prev_page)
         self.toolbar.addWidget(self.btn_prev)
 
         self.page_input = QLineEdit("1")
-        self.page_input.setFixedWidth(40)
+        self.page_input.setFixedWidth(48)
+        self.page_input.setFixedHeight(26)
         self.page_input.setAlignment(Qt.AlignCenter)
-        self.page_input.returnPressed.connect(self._on_page_jump)
+        self.page_input.setValidator(QIntValidator(1, 99999, self))
+        self.page_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #ffffff;
+                color: #0f172a;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 1px 4px;
+            }
+            QLineEdit:focus {
+                border: 1.5px solid #2563eb;
+            }
+        """)
+        self.page_input.setToolTip("Jump to page number (press Enter)")
+        self.page_input.editingFinished.connect(self._on_page_jump)
         self.toolbar.addWidget(self.page_input)
 
         self.lbl_page_total = QLabel(" / 1 ")
-        self.lbl_page_total.setStyleSheet("color: #64748b; font-weight: 500;")
+        self.lbl_page_total.setStyleSheet("color: #64748b; font-weight: 600; font-size: 11px; padding: 0 4px;")
         self.toolbar.addWidget(self.lbl_page_total)
 
         self.btn_next = QPushButton("Next Page ▶")
+        self.btn_next.setStyleSheet(nav_btn_style)
+        self.btn_next.setToolTip("Next Page (Right Arrow / Page Down)")
+        self.btn_next.setEnabled(False)
         self.btn_next.clicked.connect(self.next_page)
         self.toolbar.addWidget(self.btn_next)
 
@@ -221,7 +268,7 @@ class PDFCanvas(QWidget):
         if mode == "pac":
             self.btn_mode_pac.setChecked(True)
             self.stack.setCurrentIndex(0)
-            if self.current_finding:
+            if self.current_finding and (self.current_finding.page is None or self.current_finding.page == self.current_page_idx + 1):
                 self.pac_locator.load_finding(
                     self.doc,
                     self.current_finding,
@@ -236,8 +283,8 @@ class PDFCanvas(QWidget):
                     category="Visual Inspection",
                     standard="PDF/UA",
                     status=CheckStatus.PASS,
-                    severity=CheckResult.__annotations__.get("severity", None) or "INFO",
-                    message=f"Inspect page {self.current_page_idx + 1}",
+                    severity="INFO",
+                    message=f"Page {self.current_page_idx + 1} of {len(self.doc)}",
                     page=self.current_page_idx + 1,
                     bounding_box=self.highlight_bbox
                 )
@@ -246,6 +293,28 @@ class PDFCanvas(QWidget):
             self.btn_mode_doc.setChecked(True)
             self.stack.setCurrentIndex(1)
             self.render_current_page()
+        self._update_nav_toolbar()
+
+    def _update_nav_toolbar(self):
+        """Synchronizes page input, total count label, and prev/next button enabled states."""
+        if not self.doc or len(self.doc) == 0:
+            self.page_input.blockSignals(True)
+            self.page_input.setText("1")
+            self.page_input.blockSignals(False)
+            self.lbl_page_total.setText(" / 1 ")
+            self.btn_prev.setEnabled(False)
+            self.btn_next.setEnabled(False)
+            return
+
+        total_pages = len(self.doc)
+        curr_page = self.current_page_idx + 1
+        self.page_input.blockSignals(True)
+        self.page_input.setText(str(curr_page))
+        self.page_input.blockSignals(False)
+        self.lbl_page_total.setText(f" / {total_pages} ")
+        self.btn_prev.setEnabled(self.current_page_idx > 0)
+        self.btn_next.setEnabled(self.current_page_idx < total_pages - 1)
+        self.page_changed.emit(curr_page)
 
     def load_document(self, filepath: str, password: Optional[str] = None, doc_model: Optional[Any] = None):
         """Loads a PDF document into the viewer."""
@@ -264,7 +333,7 @@ class PDFCanvas(QWidget):
         self.current_page_idx = 0
         self.rotation = 0
         self.highlight_bbox = None
-        self.lbl_page_total.setText(f" / {len(self.doc)} ")
+        self._update_nav_toolbar()
         self.render_current_page()
 
     def render_current_page(self):
@@ -289,10 +358,7 @@ class PDFCanvas(QWidget):
             highlight_bbox=self.highlight_bbox
         )
 
-        self.page_input.setText(str(self.current_page_idx + 1))
-        self.btn_prev.setEnabled(self.current_page_idx > 0)
-        self.btn_next.setEnabled(self.current_page_idx < len(self.doc) - 1)
-        self.page_changed.emit(self.current_page_idx + 1)
+        self._update_nav_toolbar()
 
     def go_to_page(
         self,
@@ -302,24 +368,65 @@ class PDFCanvas(QWidget):
         doc_model: Optional[Any] = None
     ):
         target_idx = max(0, page_num_1based - 1)
-        if self.doc:
+        if self.doc and len(self.doc) > 0:
             target_idx = min(len(self.doc) - 1, target_idx)
+
         self.current_page_idx = target_idx
         self.highlight_bbox = bbox
-        self.current_finding = finding
+        if finding is not None:
+            self.current_finding = finding
 
         if doc_model:
             self.doc_model = doc_model
 
-        if not self.doc:
+        # Synchronize toolbar navigation controls immediately
+        self._update_nav_toolbar()
+
+        if not self.doc or len(self.doc) == 0:
             return
 
         # When a finding is targeted, activate PAC visual locator view
         if finding:
             self.set_view_mode("pac")
-            self.pac_locator.load_finding(self.doc, finding, page_num=page_num_1based, bbox=bbox, doc_model=self.doc_model)
+            self.pac_locator.load_finding(
+                self.doc,
+                finding,
+                page_num=target_idx + 1,
+                bbox=bbox,
+                doc_model=self.doc_model
+            )
         else:
-            self.render_current_page()
+            if self.stack.currentIndex() == 0:
+                # PAC Split View is active
+                if self.current_finding and (self.current_finding.page is None or self.current_finding.page == target_idx + 1):
+                    self.pac_locator.load_finding(
+                        self.doc,
+                        self.current_finding,
+                        page_num=target_idx + 1,
+                        bbox=self.highlight_bbox,
+                        doc_model=self.doc_model
+                    )
+                else:
+                    dummy_finding = CheckResult(
+                        check_id="NAV",
+                        name=f"Page {target_idx + 1} Inspection",
+                        category="Visual Inspection",
+                        standard="PDF/UA",
+                        status=CheckStatus.PASS,
+                        severity="INFO",
+                        message=f"Page {target_idx + 1} of {len(self.doc)}",
+                        page=target_idx + 1,
+                        bounding_box=bbox
+                    )
+                    self.pac_locator.load_finding(
+                        self.doc,
+                        dummy_finding,
+                        page_num=target_idx + 1,
+                        bbox=bbox,
+                        doc_model=self.doc_model
+                    )
+            else:
+                self.render_current_page()
 
         # Scroll to highlighted element if in document view
         if bbox and self.stack.currentIndex() == 1:
@@ -333,31 +440,47 @@ class PDFCanvas(QWidget):
         target_page = finding.page or 1
         self.go_to_page(target_page, finding.bounding_box, finding=finding, doc_model=self.doc_model)
 
-
     def next_page(self):
         if self.doc and self.current_page_idx < len(self.doc) - 1:
-            self.current_page_idx += 1
-            self.highlight_bbox = None
-            if self.stack.currentIndex() == 0 and self.current_finding:
-                self.pac_locator.load_finding(self.doc, self.current_finding, page_num=self.current_page_idx + 1)
-            else:
-                self.render_current_page()
+            self.go_to_page(self.current_page_idx + 2)
 
     def prev_page(self):
         if self.doc and self.current_page_idx > 0:
-            self.current_page_idx -= 1
-            self.highlight_bbox = None
-            if self.stack.currentIndex() == 0 and self.current_finding:
-                self.pac_locator.load_finding(self.doc, self.current_finding, page_num=self.current_page_idx + 1)
-            else:
-                self.render_current_page()
+            self.go_to_page(self.current_page_idx)
 
     def _on_page_jump(self):
+        if not self.doc or len(self.doc) == 0:
+            return
+        text = self.page_input.text().strip()
         try:
-            target = int(self.page_input.text().strip())
-            self.go_to_page(target)
+            target = int(text)
+            target = max(1, min(len(self.doc), target))
+            if target != self.current_page_idx + 1:
+                self.go_to_page(target)
+            else:
+                self._update_nav_toolbar()
         except ValueError:
-            self.page_input.setText(str(self.current_page_idx + 1))
+            self._update_nav_toolbar()
+
+    def keyPressEvent(self, event):
+        if self.page_input.hasFocus():
+            super().keyPressEvent(event)
+            return
+        if event.key() in (Qt.Key_PageUp, Qt.Key_Left):
+            self.prev_page()
+            event.accept()
+        elif event.key() in (Qt.Key_PageDown, Qt.Key_Right):
+            self.next_page()
+            event.accept()
+        elif event.key() == Qt.Key_Home:
+            self.go_to_page(1)
+            event.accept()
+        elif event.key() == Qt.Key_End:
+            if self.doc:
+                self.go_to_page(len(self.doc))
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def zoom_in(self):
         self.zoom = min(4.0, round(self.zoom + 0.25, 2))

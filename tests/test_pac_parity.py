@@ -627,3 +627,22 @@ def test_synthetic_form_xobjects_traversal(tmp_path):
 
     # Verify all extracted Form XObjects are valid
     assert all(fo.is_valid for fo in doc.form_xobjects)
+
+
+BINDER1_PDF = r"C:\Users\HBS\Downloads\Binder1_tagged_fixed_PAC (2).pdf"
+
+
+@pytest.mark.skipif(not os.path.exists(BINDER1_PDF), reason="Binder1 PDF not found in Downloads")
+def test_pac_parity_binder1_artifacted_content_on_page_body():
+    """Verifies that 'Artifacted content on page body' produces exactly 68 warnings on Binder1 matching PAC."""
+    doc = DocumentParser(BINDER1_PDF).parse()
+    assert doc is not None
+
+    runner = AuditRunner()
+    report = runner.run(doc)
+
+    quality_counts = report.get_category_counts("Quality")
+    art_body = quality_counts.get("Artifacted content on page body", {})
+    assert art_body.get("warned") == 68
+    assert art_body.get("failed") == 0
+

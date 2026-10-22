@@ -42,9 +42,10 @@ class VisualLocatorResolver:
         # Stage 1: Explicit Finding Bounding Box
         # ------------------------------------------------------------------
         if finding and finding.bounding_box and len(finding.bounding_box) == 4:
-            x0, y0, x1, y1 = finding.bounding_box
-            if cls._is_valid_bbox(x0, y0, x1, y1, page_w, page_h):
-                return cls._normalize_bbox(x0, y0, x1, y1, page_w, page_h)
+            if finding.page is None or finding.page == page_num:
+                x0, y0, x1, y1 = finding.bounding_box
+                if cls._is_valid_bbox(x0, y0, x1, y1, page_w, page_h):
+                    return cls._normalize_bbox(x0, y0, x1, y1, page_w, page_h)
 
         # ------------------------------------------------------------------
         # Stage 2: Structure Tree Node Lookup (by ID or object reference)

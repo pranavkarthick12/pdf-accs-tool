@@ -377,3 +377,70 @@ def test_validity_of_alternate_text_mapping_and_navigation(qapp):
     d_view.filter_by_rule_ids(rule_ids, standard="Quality", category_label="Validity of alternate text")
     assert len(d_view.filtered_findings) == 2
     assert all(f.check_id == "QUAL-ALT-001" for f in d_view.filtered_findings)
+
+
+def test_quality_banner_sad_emoji_when_artifact_error_pops(qapp):
+    """Verify sad emoji (🙁) is displayed on Quality heading when 'Artifacted content on page body' pops."""
+    doc = PDFDocumentModel(filepath="", filename="test.pdf", filesize=10, pdf_version="1.7", page_count=1)
+    results = [
+        CheckResult(
+            check_id="QUAL-ART-001",
+            name="Artifacted Content on Page Body",
+            category="Content Quality",
+            standard="Quality",
+            status=CheckStatus.WARNING,
+            severity=Severity.HIGH,
+            message="Artifact on page body contains text.",
+            items_count=2,
+            page=1
+        )
+    ]
+    report = AuditReport(document_info={"filename": doc.filename}, results=results)
+    view = CheckpointsView()
+    view.update_report(report, doc)
+
+    assert "🙁" in view.lbl_quality_banner.text()
+    assert "This document has potential quality issues." in view.lbl_quality_banner.text()
+
+
+def test_quality_banner_no_sad_emoji_when_no_artifact_error(qapp):
+    """Verify sad emoji is NOT displayed when 'Artifacted content on page body' does not pop."""
+    doc = PDFDocumentModel(filepath="", filename="test.pdf", filesize=10, pdf_version="1.7", page_count=1)
+    # Case A: Another quality error pops (e.g. title) -> heading banner shows standard text without emoji
+    results_title = [
+        CheckResult(
+            check_id="QUAL-TITLE-001",
+            name="Validity of Document Title",
+            category="Document Title Quality",
+            standard="Quality",
+            status=CheckStatus.WARNING,
+            severity=Severity.HIGH,
+            message="Document title is missing.",
+            items_count=1,
+            page=1
+        )
+    ]
+    report_title = AuditReport(document_info={"filename": doc.filename}, results=results_title)
+    view = CheckpointsView()
+    view.update_report(report_title, doc)
+    assert "🙁" not in view.lbl_quality_banner.text()
+    assert view.lbl_quality_banner.text() == "This document has potential quality issues."
+
+    # Case B: Document has no quality issues
+    results_pass = [
+        CheckResult(
+            check_id="QUAL-TITLE-001",
+            name="Validity of Document Title",
+            category="Document Title Quality",
+            standard="Quality",
+            status=CheckStatus.PASS,
+            severity=Severity.HIGH,
+            message="Document title is valid.",
+            items_count=1,
+            page=1
+        )
+    ]
+    report_pass = AuditReport(document_info={"filename": doc.filename}, results=results_pass)
+    view.update_report(report_pass, doc)
+    assert "🙁" not in view.lbl_quality_banner.text()
+    assert view.lbl_quality_banner.text() == "This document has no quality issues."
