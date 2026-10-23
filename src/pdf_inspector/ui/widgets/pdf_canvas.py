@@ -249,6 +249,7 @@ class PDFCanvas(QWidget):
         self.pac_locator = PACVisualLocatorWidget()
         self.pac_locator.full_view_requested.connect(lambda: self.set_view_mode("doc"))
         self.pac_locator.finding_navigation_requested.connect(self.finding_navigation_requested.emit)
+        self.pac_locator.canvas.zoom_changed.connect(self._on_pac_zoom_changed)
         self.stack.addWidget(self.pac_locator)
 
         # View 1: Standard Scroll Area
@@ -483,16 +484,47 @@ class PDFCanvas(QWidget):
             super().keyPressEvent(event)
 
     def zoom_in(self):
+        if self.btn_mode_pac.isChecked():
+            self.pac_locator._zoom_in()
+            pct = int(round(self.pac_locator.canvas._zoom_level * 100))
+            self.zoom_combo.blockSignals(True)
+            self.zoom_combo.setCurrentText(f"{pct}%")
+            self.zoom_combo.blockSignals(False)
+            return
         self.zoom = min(4.0, round(self.zoom + 0.25, 2))
         self.zoom_combo.setCurrentText(f"{int(self.zoom * 100)}%")
         self.render_current_page()
 
     def zoom_out(self):
+        if self.btn_mode_pac.isChecked():
+            self.pac_locator._zoom_out()
+            pct = int(round(self.pac_locator.canvas._zoom_level * 100))
+            self.zoom_combo.blockSignals(True)
+            self.zoom_combo.setCurrentText(f"{pct}%")
+            self.zoom_combo.blockSignals(False)
+            return
         self.zoom = max(0.25, round(self.zoom - 0.25, 2))
         self.zoom_combo.setCurrentText(f"{int(self.zoom * 100)}%")
         self.render_current_page()
 
+    def _on_pac_zoom_changed(self, zoom_level: float):
+        if self.btn_mode_pac.isChecked():
+            pct = int(round(zoom_level * 100))
+            self.zoom_combo.blockSignals(True)
+            self.zoom_combo.setCurrentText(f"{pct}%")
+            self.zoom_combo.blockSignals(False)
+
     def _on_zoom_combo_changed(self, text: str):
+        if self.btn_mode_pac.isChecked():
+            if text in ("Fit Width", "Fit Page", "100%"):
+                self.pac_locator._reset_zoom()
+            elif text.endswith("%"):
+                try:
+                    val = float(text.replace("%", "")) / 100.0
+                    self.pac_locator.canvas.set_zoom(val)
+                except ValueError:
+                    pass
+            return
         if not self.doc:
             return
         if text.endswith("%"):

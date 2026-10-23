@@ -9,6 +9,7 @@ from .metadata_view import MetadataView
 from .statistics_view import StatisticsView
 from .elements_view import ElementsView
 from .batch_view import BatchScanView
+from .loading_view import LoadingView
 
 __all__ = [
     "DashboardView",
@@ -21,4 +22,5 @@ __all__ = [
     "StatisticsView",
     "ElementsView",
     "BatchScanView",
+    "LoadingView",
 ]

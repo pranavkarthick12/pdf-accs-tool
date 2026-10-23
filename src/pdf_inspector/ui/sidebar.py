@@ -80,5 +80,6 @@ class Sidebar(QWidget):
         for row in range(self.list_widget.count()):
             item = self.list_widget.item(row)
             if item and item.data(Qt.UserRole) in (target, key_name):
-                self.list_widget.setCurrentRow(row)
+                if self.list_widget.currentRow() != row:
+                    self.list_widget.setCurrentRow(row)
                 break

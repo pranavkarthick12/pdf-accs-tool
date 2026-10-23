@@ -36,6 +36,7 @@ from .views.metadata_view import MetadataView
 from .views.statistics_view import StatisticsView
 from .views.elements_view import ElementsView
 from .views.batch_view import BatchScanView
+from .views.loading_view import LoadingView
 from .dialogs.about_dialog import AboutDialog
 from .dialogs.settings_dialog import SettingsDialog
 from .dialogs.export_dialog import ExportDialog
@@ -99,6 +100,7 @@ class MainWindow(QMainWindow):
         self.current_doc: Optional[PDFDocumentModel] = None
         self.current_report: Optional[AuditReport] = None
         self.audit_thread: Optional[QThread] = None
+        self._is_loading: bool = False
 
         self._init_ui()
         self._apply_theme()
@@ -120,6 +122,7 @@ class MainWindow(QMainWindow):
         self.top_bar.settings_requested.connect(self.action_show_settings)
         self.top_bar.about_requested.connect(self.action_show_about)
         self.top_bar.help_requested.connect(self.action_show_help)
+        self.top_bar.navigation_requested.connect(self._on_navigation)
         root_layout.addWidget(self.top_bar)
 
         # 2. Main Horizontal Splitter (Sidebar | Center Stack | Right Panel)
@@ -142,6 +145,7 @@ class MainWindow(QMainWindow):
         self.dashboard_view.view_details_requested.connect(lambda: self.sidebar.select_page("Detailed Findings"))
         self.dashboard_view.view_pdf_requested.connect(lambda: self.sidebar.select_page("PDF Viewer"))
         self.dashboard_view.export_report_requested.connect(self.action_export_report)
+        self.dashboard_view.finding_selected.connect(self._on_finding_selected)
         self.center_stack.addWidget(self.dashboard_view)  # 0
 
         self.checkpoints_view = CheckpointsView()
@@ -185,6 +189,9 @@ class MainWindow(QMainWindow):
         self.batch_view = BatchScanView()
         self.batch_view.document_opened.connect(self.load_pdf_file)
         self.center_stack.addWidget(self.batch_view)  # 9
+
+        self.loading_view = LoadingView()
+        self.center_stack.addWidget(self.loading_view)  # 10
 
         self.main_splitter.addWidget(self.center_stack)
 
@@ -301,6 +308,8 @@ class MainWindow(QMainWindow):
 
     # --- Actions ---
     def action_open_pdf(self):
+        if getattr(self, "_is_loading", False):
+            return
         filepath, _ = QFileDialog.getOpenFileName(
             self, "Open PDF Document", "", "PDF Files (*.pdf);;All Files (*.*)"
         )
@@ -308,16 +317,24 @@ class MainWindow(QMainWindow):
             self.load_pdf_file(filepath)
 
     def action_rescan(self):
+        if getattr(self, "_is_loading", False):
+            return
         if self.current_filepath and os.path.exists(self.current_filepath):
             self.load_pdf_file(self.current_filepath)
 
     def load_pdf_file(self, filepath: str, password: Optional[str] = None):
         """Launches the background audit thread to inspect the PDF."""
+        self._is_loading = True
         self.current_filepath = filepath
         self.current_password = password
         self.lbl_status.setText(f"Analyzing {os.path.basename(filepath)}...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.top_bar.set_document_info(os.path.basename(filepath), None, "Analyzing...")
+
+        # Show prominent loading screen in middle of page
+        self.loading_view.start(os.path.basename(filepath))
+        self.center_stack.setCurrentWidget(self.loading_view)
 
         # Open in PDF viewer canvas for snappy feedback
         try:
@@ -345,8 +362,13 @@ class MainWindow(QMainWindow):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
         self.lbl_status.setText(msg)
+        self.loading_view.set_progress(current, total, msg)
 
     def _on_audit_finished(self, doc: PDFDocumentModel, report: AuditReport):
+        self._is_loading = False
+        if hasattr(self, "loading_view"):
+            self.loading_view.stop()
+
         self.current_doc = doc
         self.current_report = report
 
@@ -365,6 +387,7 @@ class MainWindow(QMainWindow):
         )
 
         self.top_bar.set_document_loaded(True)
+        self.top_bar.set_document_info(doc.filename, report.compliance_score, "Completed")
 
         # Populate all views
         self.dashboard_view.load_document(doc, report)
@@ -393,6 +416,11 @@ class MainWindow(QMainWindow):
             self._on_checkpoint_category_clicked("PDF/UA", selected_cat)
 
     def _on_audit_error(self, err_msg: str):
+        self._is_loading = False
+        if hasattr(self, "loading_view"):
+            self.loading_view.stop()
+
+        self.top_bar.set_document_info(os.path.basename(self.current_filepath) if self.current_filepath else "-", None, "Failed")
         self.progress_bar.setVisible(False)
         self.lbl_status.setText("Audit failed.")
 
@@ -411,12 +439,21 @@ class MainWindow(QMainWindow):
                     self, "Password Required",
                     "Password required — analysis cannot continue until the document is unlocked."
                 )
+                self.center_stack.setCurrentIndex(0)
                 return
 
         QMessageBox.critical(self, "Audit Error", f"Failed to analyze PDF:\n{err_msg}")
+        self.center_stack.setCurrentIndex(0)
 
     # --- Navigation & Inter-Widget Coordination ---
     def _on_navigation(self, key: str):
+        if getattr(self, "_is_loading", False):
+            # When actively analyzing a document, keep the loading view visible
+            return
+
+        self.top_bar.select_tab(key)
+        self.sidebar.select_page(key)
+
         view_map = {
             "Dashboard": 0,
             "Checkpoints": 1,
