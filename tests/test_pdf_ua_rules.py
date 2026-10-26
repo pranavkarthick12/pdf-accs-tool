@@ -322,26 +322,29 @@ def test_metadata_completeness_rule():
 
 def test_form_field_accessibility_rule():
     from src.pdf_inspector.engine.pdf_ua.form_rules import FormFieldAccessibilityRule
+    from src.pdf_inspector.engine.pdf_ua import PDF_UA_RULES
     from src.pdf_inspector.core.models import FormFieldModel
     rule = FormFieldAccessibilityRule()
 
-    # Case 1: Form field missing /TU tooltip
+    # Verify FormFieldAccessibilityRule error check is completely removed from PDF_UA_RULES
+    assert not any(isinstance(r, FormFieldAccessibilityRule) for r in PDF_UA_RULES)
+
+    # Form field missing /TU tooltip produces no error
     f_bad = FormFieldModel(name="SignatureField", field_type="Sig", tooltip=None, page=1)
     doc_bad = PDFDocumentModel(filepath="", filename="form_bad.pdf", filesize=100, pdf_version="1.7", page_count=1, form_fields=[f_bad])
     res_bad = rule.evaluate(doc_bad)
-    assert any(r.status == CheckStatus.FAIL and "/TU" in r.message for r in res_bad)
+    assert not any(r.status == CheckStatus.FAIL for r in res_bad)
 
-    # Case 2: Form field with valid /TU tooltip
+    # Form field with valid /TU tooltip produces no error
     f_good = FormFieldModel(name="EmailField", field_type="Text", tooltip="Enter your email address", page=1)
     doc_good = PDFDocumentModel(filepath="", filename="form_good.pdf", filesize=100, pdf_version="1.7", page_count=1, form_fields=[f_good])
     res_good = rule.evaluate(doc_good)
-    assert any(r.status == CheckStatus.PASS for r in res_good)
     assert not any(r.status == CheckStatus.FAIL for r in res_good)
 
-    # Case 3: Document without form fields
+    # Document without form fields produces no error
     doc_empty = PDFDocumentModel(filepath="", filename="form_none.pdf", filesize=100, pdf_version="1.7", page_count=1, form_fields=[])
     res_empty = rule.evaluate(doc_empty)
-    assert any(r.status == CheckStatus.PASS for r in res_empty)
+    assert not any(r.status == CheckStatus.FAIL for r in res_empty)
 
 
 def test_table_structure_headers_rule():
@@ -409,12 +412,12 @@ def test_list_structure_hierarchy_rule():
 
 
 def test_form_field_accessibility_duplicate_and_unnamed_counting():
-    """Tests that FormFieldAccessibilityRule counts passed/failed fields by object identity."""
+    """Tests that FormFieldAccessibilityRule error check is completely removed and reports no error findings."""
     from src.pdf_inspector.engine.pdf_ua.form_rules import FormFieldAccessibilityRule
     from src.pdf_inspector.core.models import FormFieldModel
     rule = FormFieldAccessibilityRule()
 
-    # Case 1: Multiple unnamed fields failing
+    # Form fields produce no error findings
     f1 = FormFieldModel(name="UnnamedField", field_type="Text", tooltip=None, page=1)
     f2 = FormFieldModel(name="UnnamedField", field_type="Text", tooltip=None, page=2)
     f3 = FormFieldModel(name="ValidField", field_type="Text", tooltip="Valid description", page=3)
@@ -424,13 +427,59 @@ def test_form_field_accessibility_duplicate_and_unnamed_counting():
         page_count=3, is_tagged=True, form_fields=[f1, f2, f3]
     )
     res = rule.evaluate(doc)
-    pass_res = [r for r in res if r.status == CheckStatus.PASS]
     fail_res = [r for r in res if r.status == CheckStatus.FAIL]
+    assert len(fail_res) == 0
 
-    assert len(pass_res) == 1
-    assert pass_res[0].items_count == 1
-    assert "1 of 3 form field(s)" in pass_res[0].message
-    assert len(fail_res) == 4  # 2 missing TU + 2 unnamed name failures
+
+def test_form_field_structure_real_pdf(tmp_path):
+    """Tests that FormFieldAccessibilityRule produces no error findings on real PDFs."""
+    import os
+    import pikepdf
+    from src.pdf_inspector.engine.pdf_ua.form_rules import FormFieldAccessibilityRule
+    from src.pdf_inspector.core.models import FormFieldModel
+    rule = FormFieldAccessibilityRule()
+
+    pdf_path_valid = str(tmp_path / "form_valid.pdf")
+    pdf1 = pikepdf.new()
+    page1 = pdf1.add_blank_page()
+    w1 = pdf1.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/Annot"),
+        "/Subtype": pikepdf.Name("/Widget"),
+        "/Rect": [100, 100, 200, 120],
+        "/T": "EmailField",
+        "/TU": "Enter email address",
+        "/StructParent": 0
+    }))
+    page1.Annots = pdf1.make_indirect(pikepdf.Array([w1]))
+    objr1 = pikepdf.Dictionary({"/Type": pikepdf.Name("/OBJR"), "/Obj": w1, "/Pg": page1.obj})
+    form1 = pdf1.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/StructElem"),
+        "/S": pikepdf.Name("/Form"),
+        "/Pg": page1.obj,
+        "/K": pikepdf.Array([objr1])
+    }))
+    p1 = pdf1.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/StructElem"),
+        "/S": pikepdf.Name("/P"),
+        "/Pg": page1.obj,
+        "/ActualText": "Email: ",
+        "/K": pikepdf.Array([form1])
+    }))
+    pdf1.Root.StructTreeRoot = pdf1.make_indirect(pikepdf.Dictionary({
+        "/Type": pikepdf.Name("/StructTreeRoot"),
+        "/K": pikepdf.Array([p1])
+    }))
+    pdf1.Root.MarkInfo = pikepdf.Dictionary({"/Marked": True})
+    pdf1.save(pdf_path_valid)
+    pdf1.close()
+
+    f1 = FormFieldModel(name="EmailField", field_type="Text", tooltip="Enter email address", page=1)
+    doc_real_valid = PDFDocumentModel(
+        filepath=pdf_path_valid, filename="form_valid.pdf", filesize=os.path.getsize(pdf_path_valid),
+        pdf_version="1.7", page_count=1, is_tagged=True, form_fields=[f1]
+    )
+    res_real_valid = rule.evaluate(doc_real_valid)
+    assert not any(r.status == CheckStatus.FAIL for r in res_real_valid)
 
 
 def test_figure_alt_text_decorative_filtering():

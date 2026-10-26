@@ -230,8 +230,8 @@ class LinkQualityRule(BaseRule):
     standard = "Quality"
     severity = Severity.LOW
     machine_testable = False
-    description = "Hyperlink labels should be meaningful out of context to assist screen reader users."
-    remediation_template = "Replace vague labels like 'click here' or bare URLs with clear descriptions of the destination."
+    description = "Hyperlink labels should be meaningful out of context to assist screen reader users (W3C PDF11, PDF13)."
+    remediation_template = "Replace vague labels like 'click here' or bare URLs with clear descriptions of the destination, or supply an /Alt replacement text (W3C PDF13)."
 
     def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
         results = []
@@ -243,20 +243,54 @@ class LinkQualityRule(BaseRule):
             )]
 
         VAGUE_PATTERNS = re.compile(r"^(click\s+here|read\s+more|learn\s+more|more\s+info|more\s+details|link|here|more)(\.{0,3}|…)?$", re.IGNORECASE)
-        vague_links = [l for l in doc.links if VAGUE_PATTERNS.match(l.text.strip())]
-        if vague_links:
-            for vl in vague_links[:5]:
+        vague_links = []
+        bare_urls = []
+        missing_text_links = []
+
+        for l in doc.links:
+            # W3C PDF13: If an /Alt entry is provided, it replaces the visible text for assistive technologies.
+            # Do NOT require /Alt for every link; descriptive visible text alone satisfies W3C PDF11.
+            vis_text = (l.text or "").strip()
+            alt_text = (l.alt_text or "").strip() if getattr(l, "alt_text", None) else ""
+            has_alt = bool(alt_text)
+
+            # Determine the effective accessible text announced to assistive technologies:
+            accessible_text = alt_text if has_alt else vis_text
+
+            if not accessible_text:
+                # Link has neither visible text nor /Alt replacement text (violates W3C PDF11/PDF13)
+                missing_text_links.append(l)
+            elif VAGUE_PATTERNS.match(accessible_text):
+                vague_links.append(l)
+            elif not has_alt and vis_text.startswith(("http://", "https://", "www.")):
+                bare_urls.append(l)
+
+        if missing_text_links:
+            for ml in missing_text_links[:5]:
+                ml_target = ml.uri or (f"page {ml.destination_page}" if ml.destination_page else "internal destination")
                 results.append(self.create_result(
                     status=CheckStatus.WARNING,
-                    message=f"Ambiguous link label '{vl.text.strip()}' on page {vl.page} provides insufficient context out of context.",
-                    evidence=f"Link text: '{vl.text.strip()}' targeting {vl.uri}",
-                    page=vl.page,
-                    bounding_box=vl.bbox,
-                    custom_remediation="Change the link label to describe the specific destination or topic (e.g., 'Download Annual Report 2026').",
+                    message=f"Link on page {ml.page} lacks accessible link text and alternative description (/Alt) (W3C PDF11/PDF13).",
+                    evidence=f"Link targeting {ml_target} has no readable text or /Alt entry.",
+                    page=ml.page,
+                    bounding_box=ml.bbox,
+                    custom_remediation="Add descriptive link text or an /Alt replacement text to the Link tag.",
                     confidence=0.9
                 ))
 
-        bare_urls = [l for l in doc.links if l.text.strip().startswith(("http://", "https://", "www."))]
+        if vague_links:
+            for vl in vague_links[:5]:
+                vl_target = vl.uri or (f"page {vl.destination_page}" if vl.destination_page else "internal destination")
+                results.append(self.create_result(
+                    status=CheckStatus.WARNING,
+                    message=f"Ambiguous link label '{(vl.text or '').strip()}' on page {vl.page} provides insufficient context out of context.",
+                    evidence=f"Link text: '{(vl.text or '').strip()}' targeting {vl_target}",
+                    page=vl.page,
+                    bounding_box=vl.bbox,
+                    custom_remediation="Change the link label to describe the specific destination or topic (e.g., 'Download Annual Report 2026') or provide an /Alt description (W3C PDF13).",
+                    confidence=0.9
+                ))
+
         if bare_urls:
             results.append(self.create_result(
                 status=CheckStatus.WARNING,
@@ -264,11 +298,11 @@ class LinkQualityRule(BaseRule):
                 evidence=f"Sample raw URL: '{bare_urls[0].text[:40]}...'",
                 page=bare_urls[0].page,
                 bounding_box=bare_urls[0].bbox,
-                custom_remediation="Provide human-readable link text instead of full URL strings.",
+                custom_remediation="Provide human-readable link text or an /Alt replacement text instead of full URL strings.",
                 confidence=0.9
             ))
 
-        if not vague_links and not bare_urls:
+        if not missing_text_links and not vague_links and not bare_urls:
             results.append(self.create_result(
                 status=CheckStatus.PASS,
                 message="All hyperlink anchor labels appear meaningful and avoid bare URLs.",
@@ -348,8 +382,8 @@ class TaggedContentPageBoundariesRule(BaseRule):
 
 class TOCIContainsLinkRule(BaseRule):
     """
-    Validates that TOCI elements contain Link elements.
-    ISO 14289-1:2014, Clause 7.8 / Matterhorn Protocol Checkpoint 18-001.
+    Validates that TOCI elements contain qualifying Link elements.
+    ISO 14289-1:2014, Clause 7.8 / Matterhorn Protocol Checkpoint 18-001 / PAC Quality Check.
     """
     rule_id = "QUAL-TOC-001"
     name = "TOCI Elements Contain Link Elements"
@@ -357,7 +391,7 @@ class TOCIContainsLinkRule(BaseRule):
     standard = "Quality"
     severity = Severity.HIGH
     machine_testable = True
-    description = "Every Table of Contents Item (<TOCI>) element must contain a <Link> element."
+    description = "Every Table of Contents Item (<TOCI>) element must contain a qualifying <Link> element."
     remediation_template = "Enclose table of contents entries in <Link> structure tags targeting corresponding document sections."
 
     def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
@@ -366,7 +400,11 @@ class TOCIContainsLinkRule(BaseRule):
             return results
 
         all_nodes = doc.structure_tree.find_all_nodes()
-        toci_nodes = [n for n in all_nodes if (n.standard_tag or "").upper() == "TOCI" or (n.tag or "").upper() == "TOCI"]
+        # Strictly target TOCI elements; do NOT apply to paragraphs, form fields, footnotes, or unrelated links
+        toci_nodes = [
+            n for n in all_nodes
+            if (n.standard_tag or "").upper() == "TOCI" or (n.tag or "").upper() == "TOCI"
+        ]
 
         if not toci_nodes:
             # Zero applicable TOCI elements -> returns [] (N/A / '-')
@@ -377,11 +415,29 @@ class TOCIContainsLinkRule(BaseRule):
 
         for toci in toci_nodes:
             descendants = toci.find_all_nodes()
-            has_link = any(
-                ((d.standard_tag or "").upper() == "LINK" or (d.tag or "").upper() == "LINK")
-                for d in descendants if d != toci
-            )
-            if not has_link:
+            # Collect qualifying Link elements within this TOCI
+            qualifying_links = []
+            for d in descendants:
+                if d == toci:
+                    continue
+                # Do not count links belonging to a descendant nested TOCI
+                curr = d.parent
+                is_sub_toci = False
+                while curr and curr != toci:
+                    if (curr.standard_tag or curr.tag or "").upper() == "TOCI":
+                        is_sub_toci = True
+                        break
+                    curr = curr.parent
+                if is_sub_toci:
+                    continue
+
+                if (d.standard_tag or d.tag or "").upper() == "LINK":
+                    qualifying_links.append(d)
+
+            # PAC documented handling:
+            # - Zero qualifying links -> Invalid (fails Matterhorn 18-001)
+            # - Exactly one or multiple qualifying links -> Valid (qualifying link present)
+            if len(qualifying_links) == 0:
                 invalid_toci.append(toci)
             else:
                 valid_count += 1
@@ -408,10 +464,10 @@ class TOCIContainsLinkRule(BaseRule):
                     items_count=rem
                 ))
 
-        if valid_count > 0:
+        if not invalid_toci and valid_count > 0:
             results.append(self.create_result(
                 status=CheckStatus.PASS,
-                message=f"{valid_count} <TOCI> element(s) contain valid <Link> elements.",
+                message=f"All {valid_count} <TOCI> element(s) contain valid <Link> elements.",
                 evidence=f"TOCI link containment validated ({valid_count}/{len(toci_nodes)}).",
                 items_count=valid_count
             ))
@@ -994,8 +1050,9 @@ class ArtifactedContentOnPageBodyRule(BaseRule):
 
 class LinkCompletenessQualityRule(BaseRule):
     """
-    Validates that Link structure elements in the document are complete (contain Link annotations and text).
-    Matterhorn Protocol Checkpoint 14-001.
+    Validates the Completeness of Link Elements according to official PAC Quality checks:
+    Verifies that linkable text (such as URLs and email addresses) in the document
+    is enclosed within <Link> structure elements.
     """
     rule_id = "QUAL-LINK-002"
     name = "Completeness of Link Elements"
@@ -1003,143 +1060,295 @@ class LinkCompletenessQualityRule(BaseRule):
     standard = "Quality"
     severity = Severity.HIGH
     machine_testable = True
-    description = "Every Link structure element must contain an associated link annotation and link text."
-    remediation_template = "Ensure each Link tag encloses its corresponding link annotation in Acrobat Pro."
+    description = "Linkable text such as URLs and email addresses should be enclosed in a <Link> structure element."
+    remediation_template = "Enclose linkable URL strings and email addresses in <Link> structure tags with associated link annotations."
 
     def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
         results = []
-        if not doc.structure_tree:
+        if not doc.structure_tree and not (doc.pages and any(p.text for p in doc.pages)):
             return results
 
-        all_nodes = doc.structure_tree.find_all_nodes()
-        link_nodes = [n for n in all_nodes if (n.standard_tag or "").upper() == "LINK"]
-        if not link_nodes and not (doc.pages and any(p.mcid_texts for p in doc.pages)):
+        # Regex patterns for linkable text (URLs and email addresses)
+        URL_PATTERN = re.compile(r'(?:https?://|www\.)[^\s<>\"\'\)]+', re.IGNORECASE)
+        EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
+
+        unlinked_items = []
+        linked_items_count = 0
+
+        # Method A: Direct inspection using PyMuPDF / pikepdf when document file is accessible
+        if doc.filepath and os.path.exists(doc.filepath):
+            try:
+                fitz_doc = doc.get_fitz_doc()
+                if fitz_doc is not None:
+                    # Collect all tagged link bounding boxes per page
+                    tagged_link_bboxes_by_page: Dict[int, List[Tuple[float, float, float, float]]] = {}
+                    if doc.links:
+                        for l in doc.links:
+                            if l.has_structure_link and l.bbox:
+                                tagged_link_bboxes_by_page.setdefault(l.page, []).append(l.bbox)
+
+                    for pno in range(len(fitz_doc)):
+                        page = fitz_doc[pno]
+                        page_num = pno + 1
+                        page_text = page.get_text() or ""
+                        if not page_text:
+                            continue
+
+                        # Find all URL and email occurrences in page text
+                        page_links = page.get_links()
+                        page_link_rects = [l.get("from") for l in page_links if l.get("from")]
+
+                        found_patterns = list(URL_PATTERN.finditer(page_text)) + list(EMAIL_PATTERN.finditer(page_text))
+                        for m in found_patterns:
+                            matched_str = m.group(0).rstrip('.,;:)]}')
+                            if len(matched_str) < 5:
+                                continue
+
+                            search_rects = page.search_for(matched_str)
+                            if not search_rects:
+                                search_rects = [None]
+
+                            is_enclosed = False
+                            for s_rect in search_rects:
+                                if s_rect is None:
+                                    if any(matched_str in (l.get("uri") or "") for l in page_links):
+                                        is_enclosed = True
+                                        break
+                                else:
+                                    for lr in page_link_rects:
+                                        if hasattr(lr, "intersects") and lr.intersects(s_rect):
+                                            is_enclosed = True
+                                            break
+                                        elif isinstance(lr, (tuple, list)) and len(lr) == 4:
+                                            if not (s_rect.x1 < lr[0] or s_rect.x0 > lr[2] or s_rect.y1 < lr[1] or s_rect.y0 > lr[3]):
+                                                is_enclosed = True
+                                                break
+                                    if is_enclosed:
+                                        break
+
+                            if is_enclosed:
+                                linked_items_count += 1
+                            else:
+                                unlinked_items.append({
+                                    "page": page_num,
+                                    "text": matched_str,
+                                    "evidence": f"Unlinked text '{matched_str}' on page {page_num}"
+                                })
+            except Exception:
+                pass
+
+        # Method B: In-memory fallback for unit tests and synthetic models
+        if not (doc.filepath and os.path.exists(doc.filepath)):
+            link_nodes = doc.structure_tree.find_all_by_standard_tag("Link") if doc.structure_tree else []
+
+            # Check page texts
+            for p in getattr(doc, "pages", []):
+                p_text = getattr(p, "text", "") or ""
+                if p_text:
+                    for m in list(URL_PATTERN.finditer(p_text)) + list(EMAIL_PATTERN.finditer(p_text)):
+                        matched_str = m.group(0).rstrip('.,;:)]}')
+                        if any(matched_str in (ln.text_content or "") for ln in link_nodes):
+                            linked_items_count += 1
+                        else:
+                            unlinked_items.append({
+                                "page": p.page_number,
+                                "text": matched_str,
+                                "evidence": f"Unlinked text '{matched_str}' on page {p.page_number}"
+                            })
+
+            # Check synthetic Link structure elements completeness if no page text checked
+            if link_nodes and not unlinked_items and linked_items_count == 0:
+                for ln in link_nodes:
+                    p_tag = (ln.parent.standard_tag or ln.parent.tag or "").upper() if ln.parent else ""
+                    if p_tag in ("REFERENCE", "TOCI"):
+                        continue
+                    has_content = bool(
+                        (ln.text_content and ln.text_content.strip()) or
+                        (ln.alt_text and ln.alt_text.strip()) or
+                        (ln.actual_text and ln.actual_text.strip()) or
+                        ln.mcids or
+                        ln.children
+                    )
+                    if has_content:
+                        linked_items_count += 1
+                    else:
+                        unlinked_items.append({
+                            "page": ln.page or 1,
+                            "text": f"<{ln.tag} id='{ln.id}'>",
+                            "evidence": f"Incomplete Link <{ln.tag} id='{ln.id}'>"
+                        })
+
+        # PAC Pass, Warning, and Skipped Behavior:
+        # 1. Skipped (empty list -> renders as '-' in PAC table)
+        if not unlinked_items and linked_items_count == 0:
             return results
 
-        complete_links = []
-        incomplete_links = []
+        # 2. Warning for unlinked linkable text
+        if unlinked_items:
+            for item in unlinked_items[:5]:
+                results.append(self.create_result(
+                    status=CheckStatus.WARNING,
+                    message=f"Linkable text '{item['text']}' on page {item['page']} is not enclosed in a <Link> structure element.",
+                    evidence=item["evidence"],
+                    page=item["page"],
+                    object_reference=f"Page {item['page']}",
+                    custom_severity=Severity.HIGH,
+                    custom_remediation="Enclose the URL or email address in a <Link> structure tag.",
+                    items_count=1
+                ))
+            if len(unlinked_items) > 5:
+                rem = len(unlinked_items) - 5
+                results.append(self.create_result(
+                    status=CheckStatus.WARNING,
+                    message=f"{rem} additional linkable text element(s) are not enclosed in <Link> structure elements.",
+                    evidence=f"Total unlinked linkable items: {len(unlinked_items)}",
+                    custom_severity=Severity.HIGH,
+                    custom_remediation="Enclose all linkable text in <Link> structure tags.",
+                    items_count=rem
+                ))
 
-        # High-fidelity check using pikepdf and pymupdf when direct PDF file access is available
+        # 3. Pass when linkable text elements are complete
+        if linked_items_count > 0 and not unlinked_items:
+            results.append(self.create_result(
+                status=CheckStatus.PASS,
+                message=f"{linked_items_count} linkable text element(s) are properly enclosed in <Link> structure elements.",
+                evidence=f"Validated {linked_items_count} complete link element(s).",
+                items_count=linked_items_count
+            ))
+
+        return results
+
+
+class DuplicateOBJRLinkRule(BaseRule):
+    """
+    Custom Validation Rule:
+    Detects multiple OBJR annotations associated with the same logical link content.
+    Reports an error only when PDF object references establish that they represent
+    duplicate annotations for the same link. Does not flag separate legitimate links.
+    """
+    rule_id = "CUST-LINK-001"
+    name = "Duplicate Link Annotation Object References"
+    category = "Link Quality"
+    standard = "Custom"
+    severity = Severity.HIGH
+    machine_testable = True
+    description = "Multiple OBJR annotations must not reference the same underlying link annotation object within the same logical link content."
+    remediation_template = "Ensure each link annotation is referenced by at most one OBJR in the Link structure element."
+
+    def evaluate(self, doc: PDFDocumentModel) -> List[CheckResult]:
+        results = []
+        if not doc.structure_tree and not (doc.filepath and os.path.exists(doc.filepath)):
+            return results
+
+        duplicate_links = []
+        total_links_checked = 0
+
+        # Method A: Direct inspection using pikepdf
         if doc.filepath and os.path.exists(doc.filepath):
             try:
                 import pikepdf
                 with pikepdf.open(doc.filepath) as pdf:
                     root = pdf.Root.get('/StructTreeRoot')
-                    content_links = []
-                    def traverse(elem, ancestors):
-                        tag = str(elem.get('/S', '')).lstrip('/')
-                        if tag == 'Link':
-                            if 'Reference' not in ancestors and 'TOCI' not in ancestors:
-                                content_links.append((elem, ancestors))
-                        new_anc = ancestors + [tag]
-                        if hasattr(elem, 'K'):
-                            k = elem.K
-                            if isinstance(k, pikepdf.Array):
-                                for c in k:
-                                    if isinstance(c, (pikepdf.Dictionary, pikepdf.Stream)): traverse(c, new_anc)
-                            elif isinstance(k, (pikepdf.Dictionary, pikepdf.Stream)): traverse(k, new_anc)
-
                     if root:
-                        traverse(root, [])
+                        def check_node(elem, pg_num=1):
+                            nonlocal total_links_checked
+                            tag = str(elem.get('/S', '')).lstrip('/')
+                            p_curr = pg_num
+                            if '/Pg' in elem:
+                                try:
+                                    p_curr = [i + 1 for i, p in enumerate(pdf.pages) if p.objgen == elem.Pg.objgen][0]
+                                except Exception:
+                                    pass
 
-                    page_map = {p.objgen: i + 1 for i, p in enumerate(pdf.pages)}
-                    for elem, anc in content_links:
-                        parent = anc[-1] if anc else ''
-                        k = elem.get('/K')
-                        k_list = k if isinstance(k, pikepdf.Array) else [k] if k is not None else []
-                        annots = [it.get('/Obj') for it in k_list if isinstance(it, pikepdf.Dictionary) and it.get('/Type') == '/OBJR']
-                        has_uri = any(a and '/A' in a and str(a.A.get('/S', '')) == '/URI' for a in annots)
-                        if parent == 'LBody':
-                            if has_uri:
-                                complete_links.append(elem)
-                            else:
-                                l_pg = 1
-                                if '/Pg' in elem and elem.Pg.objgen in page_map:
-                                    l_pg = page_map[elem.Pg.objgen]
-                                elif annots and annots[0] and '/P' in annots[0] and annots[0].P.objgen in page_map:
-                                    l_pg = page_map[annots[0].P.objgen]
-                                incomplete_links.append({
-                                    'message': f"List item link on page {l_pg} lacks external URI destination annotation.",
-                                    'evidence': f"Incomplete link in list item (LBody) on page {l_pg}",
-                                    'page': l_pg,
-                                    'ref': f"<Link on page {l_pg}>"
-                                })
+                            if tag == 'Link':
+                                total_links_checked += 1
+                                # Collect all OBJR objects in /K
+                                k = elem.get('/K')
+                                k_items = k if isinstance(k, pikepdf.Array) else [k] if k is not None else []
+                                obj_refs = []
+                                for it in k_items:
+                                    if isinstance(it, pikepdf.Dictionary) and it.get('/Type') == '/OBJR':
+                                        obj = it.get('/Obj')
+                                        if obj is not None:
+                                            obj_refs.append(getattr(obj, "objgen", str(obj)))
+                                    # Also inspect child Span in Link (optional Span tag)
+                                    elif isinstance(it, pikepdf.Dictionary) and str(it.get('/S', '')).lstrip('/') == 'Span':
+                                        span_k = it.get('/K')
+                                        span_items = span_k if isinstance(span_k, pikepdf.Array) else [span_k] if span_k is not None else []
+                                        for sit in span_items:
+                                            if isinstance(sit, pikepdf.Dictionary) and sit.get('/Type') == '/OBJR':
+                                                sobj = sit.get('/Obj')
+                                                if sobj is not None:
+                                                    obj_refs.append(getattr(sobj, "objgen", str(sobj)))
 
-                # Scan for untagged / unlinked URL blocks in document body
-                try:
-                    fitz_doc = doc.get_fitz_doc()
-                    if fitz_doc is not None:
-                        url_pattern = re.compile(r'https?://[^\s<>\"\'\)]+')
-                        for pno, page in enumerate(fitz_doc):
-                            text = doc.pages[pno].text if pno < len(doc.pages) and doc.pages[pno].text else ""
-                            if "http://" not in text and "https://" not in text:
-                                continue
-                            page_links = page.get_links()
-                            found_urls = set()
-                            for m in url_pattern.finditer(text):
-                                u = m.group(0).rstrip('.,;:')
-                                if not any(l.get('uri') and u in l.get('uri') for l in page_links):
-                                    found_urls.add(u)
-                            if found_urls:
-                                incomplete_links.append({
-                                    'message': f"Page {pno + 1} contains unlinked URL text without an associated Link tag.",
-                                    'evidence': f"Unlinked URL: {sorted(found_urls)[0]}",
-                                    'page': pno + 1,
-                                    'ref': f"Page {pno + 1}"
-                                })
-                except Exception:
-                    pass
+                                # Check if multiple OBJR dictionaries reference the exact same annotation object
+                                if len(obj_refs) > len(set(obj_refs)):
+                                    duplicate_links.append({
+                                        'page': p_curr,
+                                        'elem': elem,
+                                        'count': len(obj_refs) - len(set(obj_refs)),
+                                        'ref': f"<Link on page {p_curr}>"
+                                    })
+
+                            # Traverse children
+                            k_sub = elem.get('/K')
+                            if isinstance(k_sub, pikepdf.Array):
+                                for c in k_sub:
+                                    if isinstance(c, (pikepdf.Dictionary, pikepdf.Stream)):
+                                        check_node(c, p_curr)
+                            elif isinstance(k_sub, (pikepdf.Dictionary, pikepdf.Stream)):
+                                check_node(k_sub, p_curr)
+
+                        check_node(root)
             except Exception:
                 pass
 
-        # Fallback to structure tree when direct PDF access is unavailable (e.g. synthetic unit tests)
-        if not (doc.filepath and os.path.exists(doc.filepath)) and link_nodes:
+        # Method B: In-memory fallback for unit tests and synthetic models
+        if not (doc.filepath and os.path.exists(doc.filepath)):
+            link_nodes = doc.structure_tree.find_all_by_standard_tag("Link")
             for ln in link_nodes:
-                p_tag = (ln.parent.standard_tag or ln.parent.tag or "").upper() if ln.parent else ""
-                if p_tag in ("REFERENCE", "TOCI"):
-                    continue
-                has_content = bool(ln.children or ln.mcids or (ln.text_content and ln.text_content.strip()))
-                if has_content:
-                    complete_links.append(ln)
-                else:
-                    incomplete_links.append({
-                        'message': f"<Link> element on page {ln.page or 1} is incomplete (no child content or annotation).",
-                        'evidence': f"Incomplete Link <{ln.tag} id='{ln.id}'>",
+                total_links_checked += 1
+                objr_refs = list(ln.attributes.get("objr_refs", []))
+                for child in ln.find_all_nodes():
+                    if child != ln:
+                        objr_refs.extend(child.attributes.get("objr_refs", []))
+                is_dup = ln.attributes.get("duplicate_objr", False)
+                if is_dup or (objr_refs and len(objr_refs) > len(set(objr_refs))):
+                    duplicate_links.append({
                         'page': ln.page or 1,
+                        'elem': ln,
+                        'count': 1,
                         'ref': f"<{ln.tag} id='{ln.id}'>"
                     })
 
-        if not complete_links and not incomplete_links:
-            return results
-
-        if incomplete_links:
-            for inc in incomplete_links[:5]:
+        if duplicate_links:
+            for dl in duplicate_links[:5]:
                 results.append(self.create_result(
                     status=CheckStatus.FAIL,
-                    message=inc['message'],
-                    evidence=inc['evidence'],
-                    page=inc.get('page', 1),
-                    object_reference=inc.get('ref'),
+                    message=f"Link structure element on page {dl['page']} contains multiple OBJR annotations referencing the same link target.",
+                    evidence=f"Duplicate OBJR reference in {dl['ref']}",
+                    page=dl['page'],
+                    object_reference=dl['ref'],
                     custom_severity=Severity.HIGH,
-                    custom_remediation="Associate a link annotation and visible text with all Link tags.",
+                    custom_remediation="Remove duplicate OBJR references from the Link element so each link annotation is referenced once.",
                     items_count=1
                 ))
-            if len(incomplete_links) > 5:
-                rem = len(incomplete_links) - 5
+            if len(duplicate_links) > 5:
+                rem = len(duplicate_links) - 5
                 results.append(self.create_result(
                     status=CheckStatus.FAIL,
-                    message=f"{rem} additional incomplete <Link> element(s).",
-                    evidence=f"Total incomplete links: {len(incomplete_links)}",
+                    message=f"{rem} additional Link element(s) contain duplicate OBJR annotations.",
+                    evidence=f"Total duplicate OBJR links: {len(duplicate_links)}",
                     custom_severity=Severity.HIGH,
-                    custom_remediation="Associate link annotations and visible text with all Link tags.",
+                    custom_remediation="Remove duplicate OBJR references from all Link elements.",
                     items_count=rem
                 ))
-        if complete_links:
+        elif total_links_checked > 0:
             results.append(self.create_result(
                 status=CheckStatus.PASS,
-                message=f"{len(complete_links)} Link element(s) are structurally complete.",
-                evidence=f"Validated {len(complete_links)} complete link element(s).",
-                items_count=len(complete_links)
+                message=f"All {total_links_checked} Link structure element(s) have unique OBJR annotation references without duplicates.",
+                evidence="OBJR annotation references validated.",
+                items_count=total_links_checked
             ))
 
         return results

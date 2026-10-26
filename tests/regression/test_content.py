@@ -279,16 +279,18 @@ class TestContentRegression:
         rule = ParentTreeIntegrityRule()
 
         node = StructureNode("h1", "H1", "H1", page=1, obj_num=100, mcids=[0], mcid_entries=[(0, 1)])
-        root = StructureNode("root", "StructTreeRoot", "StructTreeRoot", children=[node])
+        # Index 1 points to obj 300 which is erroneously tagged as 'Artifact' inside StructTreeRoot -> Matterhorn 01-008
+        node_art = StructureNode("art1", "Artifact", "Artifact", page=1, obj_num=300, mcids=[1], mcid_entries=[(1, 1)])
+        root = StructureNode("root", "StructTreeRoot", "StructTreeRoot", children=[node, node_art])
         page1 = PageModel(page_number=1, width=600, height=800, struct_parents_id=0, mcids=[0, 1])
 
         # ParentTree:
         # Index 0: Points to obj 200 (mismatch vs node.obj_num 100) -> Matterhorn 01-008
-        # Index 1: Corrupt dictionary with tag 'Artifact' -> Matterhorn 01-008
+        # Index 1: Illegal structure element inside tree with tag 'Artifact' -> Matterhorn 01-008
         pt_map = {
             0: [
                 {"obj_num": 200, "tag": "H1", "type": "StructElem", "has_parent": True},
-                {"obj_num": 300, "tag": "Artifact", "type": "", "has_parent": False}
+                {"obj_num": 300, "tag": "Artifact", "type": "StructElem", "has_parent": True}
             ]
         }
         doc = PDFDocumentModel(
@@ -301,6 +303,54 @@ class TestContentRegression:
         fails = [r for r in res if r.status == CheckStatus.FAIL]
         assert any("refers to MCID 0, but /ParentTree points to obj 200" in r.message for r in fails)
         assert any("not a valid structure element (tag: 'Artifact')" in r.message for r in fails)
+
+    def test_parent_tree_artifact_outside_structure_tree_valid(self):
+        """
+        Tests that an Artifact entry in the ParentTree representing a valid artifact
+        outside the structure tree (e.g. running headers, footers, pagination) is valid
+        and does NOT trigger false-positive Matterhorn 01-005 or 01-008 errors.
+        """
+        from src.pdf_inspector.engine.pdf_ua.parent_tree_rules import ParentTreeIntegrityRule
+        from src.pdf_inspector.engine.pdf_ua.content_rules import MCIDStructureReferenceRule
+
+        # StructTreeRoot contains real content (obj 100, MCID 0)
+        node = StructureNode("p1", "P", "P", page=1, obj_num=100, mcids=[0], mcid_entries=[(0, 1)])
+        root = StructureNode("root", "StructTreeRoot", "StructTreeRoot", children=[node])
+
+        # Page 1 contains real content MCID 0, and artifact MCID 1
+        page1 = PageModel(
+            page_number=1, width=600, height=800, struct_parents_id=0,
+            mcids=[0, 1], artifact_mcids={1}
+        )
+
+        # ParentTree:
+        # Index 0: Points to obj 100 (matches node.obj_num)
+        # Index 1: Artifact dictionary obj 359 with tag 'Artifact' outside the structure tree
+        pt_map = {
+            0: [
+                {"obj_num": 100, "tag": "P", "type": "StructElem", "has_parent": True},
+                {"obj_num": 359, "tag": "Artifact", "type": "", "has_parent": False}
+            ]
+        }
+        doc = PDFDocumentModel(
+            filepath="", filename="pt_artifact_valid.pdf", filesize=100, pdf_version="1.7",
+            page_count=1, is_tagged=True, structure_tree=root, pages=[page1],
+            has_parent_tree=True, parent_tree_valid=True, parent_tree_entries_count=1,
+            parent_tree_map=pt_map
+        )
+
+        # 1. ParentTreeIntegrityRule must NOT report obj 359 as invalid
+        pt_rule = ParentTreeIntegrityRule()
+        pt_res = pt_rule.evaluate(doc)
+        pt_fails = [r for r in pt_res if r.status == CheckStatus.FAIL]
+        assert len(pt_fails) == 0
+
+        # 2. MCIDStructureReferenceRule must NOT report MCID 1 as an orphan
+        mcid_rule = MCIDStructureReferenceRule()
+        mcid_res = mcid_rule.evaluate(doc)
+        mcid_fails = [r for r in mcid_res if r.status == CheckStatus.FAIL]
+        assert len(mcid_fails) == 0
+
 
     def test_parent_tree_supplementary_elements_valid(self):
         """

@@ -353,6 +353,8 @@ class DocumentParser:
                                     og = getattr(item, "objgen", (None, None))[0] if hasattr(item, "objgen") else None
                                     s_tag = str(item.get("/S", "")).strip("/")
                                     t_val = str(item.get("/Type", "")).strip("/")
+                                    if not s_tag and t_val.lower() == "artifact":
+                                        s_tag = "Artifact"
                                     has_p = bool(item.get("/P"))
                                     p_obj = item.get("/P") if hasattr(item, "get") else None
                                     p_og = getattr(p_obj, "objgen", (None, None))[0] if hasattr(p_obj, "objgen") else None
@@ -374,10 +376,14 @@ class DocumentParser:
                             og = getattr(val, "objgen", (None, None))[0] if hasattr(val, "objgen") else None
                             p_obj = val.get("/P") if hasattr(val, "get") else None
                             p_og = getattr(p_obj, "objgen", (None, None))[0] if hasattr(p_obj, "objgen") else None
+                            s_tag = str(val.get("/S", "")).strip("/")
+                            t_val = str(val.get("/Type", "")).strip("/")
+                            if not s_tag and t_val.lower() == "artifact":
+                                s_tag = "Artifact"
                             parent_tree_map[sp_id] = {
                                 "obj_num": og,
-                                "tag": str(val.get("/S", "")).strip("/"),
-                                "type": str(val.get("/Type", "")).strip("/"),
+                                "tag": s_tag,
+                                "type": t_val,
                                 "has_parent": bool(val.get("/P")),
                                 "parent_obj_num": p_og
                             }
@@ -424,6 +430,7 @@ class DocumentParser:
                 art_in_tagged_count = 0
                 page_stream_text_count = 0
                 page_artifact_texts: Set[str] = set()
+                page_artifact_mcids: Set[int] = set()
 
                 # Collect direct XObjects defined on this page
                 xobj_info: Dict[str, Dict[str, Any]] = {}
@@ -461,7 +468,10 @@ class DocumentParser:
                                 if hasattr(xo, "read_bytes"):
                                     xo_stream = xo.read_bytes().decode("latin1", errors="ignore")
                                     for xo_m in MCID_PATTERN.finditer(xo_stream):
+                                        x_tag = xo_m.group(1)
                                         x_mcid = int(xo_m.group(2))
+                                        if x_tag.lower() == "artifact" or "/artifact" in xo_m.group(0).lower():
+                                            page_artifact_mcids.add(x_mcid)
                                         if x_mcid not in mcids_found:
                                             mcids_found.append(x_mcid)
                         except Exception:
@@ -511,9 +521,21 @@ class DocumentParser:
                                 props = bdc_m.group(2) if bdc_m else ""
                                 mcid = None
                                 if props.startswith("<<") and "/MCID" in props:
-                                    mc_match = re.search(r"/MCID\s+(\d+)", props)
+                                    mc_match = re.search(r"/MCID\s*(\d+)", props, re.IGNORECASE)
                                     if mc_match:
                                         mcid = int(mc_match.group(1))
+                                elif props.startswith("/") and "/Resources" in pike_page and "/Properties" in pike_page["/Resources"]:
+                                    try:
+                                        res_props = pike_page["/Resources"]["/Properties"]
+                                        prop_key = pikepdf.Name(props)
+                                        if prop_key in res_props:
+                                            prop_dict = res_props[prop_key]
+                                            if "/MCID" in prop_dict:
+                                                mcid = int(prop_dict["/MCID"])
+                                            if "/Artifact" in str(prop_dict) or str(prop_dict.get("/Type", "")).lower() == "/artifact":
+                                                tag = "Artifact"
+                                    except Exception:
+                                        pass
 
                                 is_art = (tag.lower() == "artifact" or "/artifact" in props.lower())
                                 in_tagged = (tagged_depth > 0)
@@ -521,6 +543,8 @@ class DocumentParser:
 
                                 art_model = None
                                 if is_art:
+                                    if mcid is not None:
+                                        page_artifact_mcids.add(mcid)
                                     if in_tagged:
                                         art_in_tagged_count += 1
                                         ancestor = next(s for s in reversed(stack) if s["mcid"] is not None)
@@ -542,6 +566,7 @@ class DocumentParser:
                                     page_artifacts.append(art_model)
                                 else:
                                     if in_art and mcid is not None:
+                                        page_artifact_mcids.add(mcid)
                                         tagged_in_art_count += 1
                                         page_content_occs.append(ContentOccurrenceModel(
                                             page_number=page_idx,
@@ -813,7 +838,8 @@ class DocumentParser:
                     artifact_in_tagged_count=art_in_tagged_count,
                     annotations_count=annots_count,
                     stream_text_strings_count=page_stream_text_count,
-                    artifact_texts=page_artifact_texts
+                    artifact_texts=page_artifact_texts,
+                    artifact_mcids=page_artifact_mcids
                 ))
 
             # 3. Structure Tree
@@ -838,6 +864,19 @@ class DocumentParser:
                     if occ.is_inside_artifact and occ.mcid is not None and occ.mcid in page_tree_mcids
                 ]
                 p.tagged_in_artifact_count = len(real_tagged_in_art)
+
+                # Reconcile artifact MCIDs from ParentTree:
+                # If ParentTree maps an MCID on this page to an artifact dictionary,
+                # record it in p.artifact_mcids (ISO 32000-1 §14.8.2.2).
+                if p.struct_parents_id is not None and p.struct_parents_id in parent_tree_map:
+                    pt_val = parent_tree_map[p.struct_parents_id]
+                    if isinstance(pt_val, list):
+                        for m in p.mcids:
+                            if m < len(pt_val):
+                                item = pt_val[m]
+                                if isinstance(item, dict):
+                                    if item.get("tag", "").lower() == "artifact" or item.get("type", "").lower() == "artifact":
+                                        p.artifact_mcids.add(m)
 
             # 4. Extract Fonts
             fonts = self._extract_fonts(fitz_doc, pike_doc)
