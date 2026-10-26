@@ -470,6 +470,8 @@ class DocumentParser:
                         try:
                             xo_dict = pike_page["/Resources"]["/XObject"]
                             for _, xo in xo_dict.items():
+                                if str(xo.get("/Subtype", "")) != "/Form":
+                                    continue
                                 if hasattr(xo, "read_bytes"):
                                     xo_stream = xo.read_bytes().decode("latin1", errors="ignore")
                                     xo_stack: List[Dict[str, Any]] = []

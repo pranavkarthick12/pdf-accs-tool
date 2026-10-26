@@ -1250,13 +1250,15 @@ class DuplicateOBJRLinkRule(BaseRule):
                 with pikepdf.open(doc.filepath) as pdf:
                     root = pdf.Root.get('/StructTreeRoot')
                     if root:
+                        page_map = {p.objgen: i + 1 for i, p in enumerate(pdf.pages)}
+
                         def check_node(elem, pg_num=1):
                             nonlocal total_links_checked
                             tag = str(elem.get('/S', '')).lstrip('/')
                             p_curr = pg_num
                             if '/Pg' in elem:
                                 try:
-                                    p_curr = [i + 1 for i, p in enumerate(pdf.pages) if p.objgen == elem.Pg.objgen][0]
+                                    p_curr = page_map.get(elem.Pg.objgen, pg_num)
                                 except Exception:
                                     pass
 
