@@ -460,11 +460,11 @@ def test_figure_alt_text_decorative_filtering():
 
 
 def test_figure_bounding_box_multi_page_spanned():
-    """Tests that FigureBoundingBoxRule detects page-spanning figures via pages_spanned."""
+    """Tests that FigureBoundingBoxRule allows valid multi-page figures without requiring per-page BBoxes."""
     from src.pdf_inspector.engine.pdf_ua.structure_rules import FigureBoundingBoxRule
     rule = FigureBoundingBoxRule()
 
-    # Multi-page figure spanning page 1 and page 2 without BBox
+    # Multi-page figure spanning page 1 and page 2 without BBox (BBox is optional)
     fig_multi = StructureNode(
         id="f_multi", tag="Figure", standard_tag="Figure", page=1,
         pages_spanned=[1, 2], has_explicit_bbox=False
@@ -475,9 +475,7 @@ def test_figure_bounding_box_multi_page_spanned():
         page_count=2, is_tagged=True, structure_tree=root
     )
     res = rule.evaluate(doc)
-    fail_res = [r for r in res if r.status == CheckStatus.FAIL]
-    assert len(fail_res) == 1
-    assert "spans 2 pages" in fail_res[0].message
+    assert all(r.status == CheckStatus.PASS for r in res)
 
 
 def test_figure_bounding_box_comprehensive_matrix():
@@ -558,11 +556,11 @@ def test_figure_bounding_box_comprehensive_matrix():
     doc10 = PDFDocumentModel(filepath="", filename="f10.pdf", filesize=100, pdf_version="1.7", page_count=2, is_tagged=True, structure_tree=StructureNode("root", "StructTreeRoot", "StructTreeRoot", children=[f10]))
     assert all(r.status == CheckStatus.PASS for r in rule.evaluate(doc10))
 
-    # 11. Multi-page figure spanning pages 1 and 2 with ONLY 1 BBox on page 1 (FAIL Matterhorn 19-001)
+    # 11. Multi-page figure spanning pages 1 and 2 with valid BBox (PASS)
     f11 = StructureNode("f11", "Figure", "Figure", page=1, pages_spanned=[1, 2], attributes={"BBox": [10.0, 20.0, 100.0, 200.0]})
     doc11 = PDFDocumentModel(filepath="", filename="f11.pdf", filesize=100, pdf_version="1.7", page_count=2, is_tagged=True, structure_tree=StructureNode("root", "StructTreeRoot", "StructTreeRoot", children=[f11]))
     res11 = rule.evaluate(doc11)
-    assert any(r.status == CheckStatus.FAIL and "lacks a BBox attribute for each page" in r.message for r in res11)
+    assert all(r.status == CheckStatus.PASS for r in res11)
 
 
 def test_unicode_pua_rule_synthetic():

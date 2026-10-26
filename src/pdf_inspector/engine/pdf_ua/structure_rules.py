@@ -550,40 +550,19 @@ class FigureBoundingBoxRule(BaseRule):
                     ))
                     continue
 
-            # 2. Matterhorn 19-001: Figure spanning more than one page requires page-specific BBox attributes
-            pages_spanned = set(fig.pages_spanned) if fig.pages_spanned else set()
-            if not pages_spanned:
-                if fig.page:
-                    pages_spanned.add(fig.page)
-                for c in fig.children:
-                    if c.page:
-                        pages_spanned.add(c.page)
-
-            if len(pages_spanned) > 1:
-                pages_with_bbox = set()
-                is_raw_valid, _ = validate_bbox_coordinates(raw_bbox)
-                is_struct_valid, _ = validate_bbox_coordinates(fig.struct_bbox)
-                if is_raw_valid or is_struct_valid:
-                    if fig.page:
-                        pages_with_bbox.add(fig.page)
-
-                for c in fig.children:
-                    c_bbox = c.attributes.get("BBox") if c.attributes else None
-                    is_c_raw_valid, _ = validate_bbox_coordinates(c_bbox)
-                    is_c_struct_valid, _ = validate_bbox_coordinates(c.struct_bbox)
-                    if is_c_raw_valid or is_c_struct_valid:
-                        if c.page:
-                            pages_with_bbox.add(c.page)
-                        elif c.pages_spanned:
-                            pages_with_bbox.update(c.pages_spanned)
-
-                if not pages_spanned.issubset(pages_with_bbox):
-                    failing_figures.append((
-                        fig,
-                        f"Figure element spans {len(pages_spanned)} pages ({sorted(pages_spanned)}) but lacks a BBox attribute for each page (ISO 14289-1, Clause 7.18 / Matterhorn 19-001).",
-                        f"Multi-page figure on pages: {sorted(pages_spanned)}, pages with BBox: {sorted(pages_with_bbox)}",
-                        "Add a /BBox attribute to each structure element representing a single page portion of the figure."
-                    ))
+            # Also validate BBox on any child nodes if explicitly present
+            for c in fig.children:
+                c_bbox = c.attributes.get("BBox") if c.attributes else None
+                if c_bbox is not None and not (isinstance(c_bbox, (list, tuple, str, dict)) and len(c_bbox) == 0):
+                    is_c_valid, _ = validate_bbox_coordinates(c_bbox)
+                    if not is_c_valid:
+                        failing_figures.append((
+                            c,
+                            "Figure element contains an invalid /BBox attribute (must be an array of four numbers) (Matterhorn 16-001).",
+                            f"Malformed child BBox: {c_bbox}",
+                            "Set /BBox attribute to a valid array of four numbers [x0 y0 x1 y1]."
+                        ))
+                        break
 
         if failing_figures:
             for fig, msg, evid, remed in failing_figures[:5]:

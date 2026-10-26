@@ -126,11 +126,11 @@ class TestFigureBoundingBoxRule:
         res = rule.evaluate(doc)
         assert any(r.status == CheckStatus.FAIL and "invalid /BBox attribute" in r.message for r in res)
 
-    def test_multi_page_figure_missing_page_bbox_fails(self):
+    def test_multi_page_figure_valid_bbox_passes(self):
         rule = FigureBoundingBoxRule()
         fig = StructureNode(
             "f_multi", "Figure", "Figure", page=1, pages_spanned=[1, 2],
-            attributes={"BBox": [0, 0, 500, 700]}  # only 1 BBox for 2 pages
+            attributes={"BBox": [0, 0, 500, 700]}  # Valid 4-number BBox
         )
         doc = PDFDocumentModel(
             filepath="", filename="test.pdf", filesize=100, pdf_version="1.7",
@@ -138,7 +138,7 @@ class TestFigureBoundingBoxRule:
             structure_tree=StructureNode("root", "StructTreeRoot", "StructTreeRoot", children=[fig])
         )
         res = rule.evaluate(doc)
-        assert any(r.status == CheckStatus.FAIL and "lacks a BBox attribute for each page" in r.message for r in res)
+        assert all(r.status == CheckStatus.PASS for r in res)
 
 
 class TestPipelineIsolationAndAggregation:

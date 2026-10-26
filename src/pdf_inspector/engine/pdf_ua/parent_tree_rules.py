@@ -97,8 +97,11 @@ class ParentTreeIntegrityRule(BaseRule):
         for p in doc.pages:
             if p.struct_parents_id is not None and p.struct_parents_id in pt_map:
                 pt_entry = pt_map[p.struct_parents_id]
+                empty_mcids = getattr(p, "empty_mcids", set())
                 if isinstance(pt_entry, list):
                     for mcid in p.mcids:
+                        if mcid in empty_mcids:
+                            continue
                         if mcid >= len(pt_entry):
                             pt_missing_mcids.append((p.page_number, mcid, f"exceeds array length {len(pt_entry)}"))
                         elif pt_entry[mcid] is None:
@@ -166,8 +169,11 @@ class ParentTreeIntegrityRule(BaseRule):
         for p in doc.pages:
             if p.struct_parents_id is not None and p.struct_parents_id in pt_map:
                 pt_entry = pt_map[p.struct_parents_id]
+                empty_mcids = getattr(p, "empty_mcids", set())
                 if isinstance(pt_entry, list):
                     for mcid in p.mcids:
+                        if mcid in empty_mcids:
+                            continue
                         if mcid < len(pt_entry):
                             target = pt_entry[mcid]
                             if isinstance(target, dict):

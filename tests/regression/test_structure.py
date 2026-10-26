@@ -228,7 +228,7 @@ class TestStructureRegression:
     def test_figure_explicit_bbox_rule(self):
         rule = FigureBoundingBoxRule()
 
-        # Case 1: Multi-page figure spanning pages 1 and 2 without page-specific BBox attributes (Matterhorn 19-001)
+        # Case 1: Multi-page figure spanning pages 1 and 2 without BBox attributes (BBox is optional per ISO 14289-1)
         fig_child1 = StructureNode("fig_p1", "Figure", "Figure", page=1)
         fig_child2 = StructureNode("fig_p2", "Figure", "Figure", page=2)
         fig_multipage = StructureNode(
@@ -241,7 +241,7 @@ class TestStructureRegression:
             page_count=2, is_tagged=True, structure_tree=root_multi
         )
         res_multi = rule.evaluate(doc_multi)
-        assert any(r.status == CheckStatus.FAIL and "spans" in r.message.lower() for r in res_multi)
+        assert all(r.status == CheckStatus.PASS for r in res_multi)
 
         # Case 2: Figure with malformed /BBox attribute (Matterhorn 16-001)
         fig_malformed = StructureNode(

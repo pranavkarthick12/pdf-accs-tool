@@ -232,8 +232,11 @@ class MCIDStructureReferenceRule(BaseRule):
             referenced = tree_mcids_by_page.get(p.page_number, set())
             sp_id = p.struct_parents_id
             pt_entry = pt_map.get(sp_id, []) if sp_id is not None else []
+            empty_mcids = getattr(p, "empty_mcids", set())
             orphans = []
             for mcid in p.mcids:
+                if mcid in empty_mcids:
+                    continue
                 if mcid in referenced or mcid in global_unassigned_mcids:
                     continue
                 # Also verify if the MCID is associated with a valid structure element via /ParentTree (ISO 14289-1 7.1)

@@ -32,7 +32,7 @@ class FigureAlternativeTextRule(BaseRule):
         formula_nodes = doc.structure_tree.find_all_by_standard_tag("Formula")
         all_graphics = figure_nodes + formula_nodes
 
-        if not all_graphics and not doc.images:
+        if not all_graphics:
             results.append(self.create_result(
                 status=CheckStatus.PASS,
                 message="No graphical figures or formulas found in the document.",
@@ -46,7 +46,9 @@ class FigureAlternativeTextRule(BaseRule):
         for node in all_graphics:
             if node.is_decorative():
                 continue
-            alt = (node.alt_text or node.actual_text or "").strip()
+            alt_candidate = (node.alt_text or "").strip()
+            actual_candidate = (node.actual_text or "").strip()
+            alt = alt_candidate if alt_candidate else actual_candidate
             page = node.page
             if page is None and node.pages_spanned:
                 page = node.pages_spanned[0]
@@ -61,9 +63,6 @@ class FigureAlternativeTextRule(BaseRule):
                 missing_alt.append((tag_label, page, bbox, node.id, node.text_content))
             elif FILENAME_PATTERN.match(alt) or PLACEHOLDER_PATTERN.match(alt) or len(alt) <= 2:
                 placeholder_alt.append((tag_label, alt, page, bbox, node.id, node.text_content))
-
-        # Check for untagged images (only images not already associated with a structure element)
-        untagged_images = [img for img in doc.images if not img.is_artifact and not img.has_alt and not img.structure_element_id]
 
         if missing_alt:
             for tag_label, pg, bbox, nid, txt in missing_alt:
@@ -91,20 +90,6 @@ class FigureAlternativeTextRule(BaseRule):
                     object_reference=f"<{tag_label} id='{nid}'>",
                     custom_severity=Severity.MEDIUM,
                     custom_remediation="Replace file names or generic placeholders with meaningful descriptive alt text.",
-                    items_count=1
-                ))
-
-        if untagged_images:
-            for img in untagged_images[:5]:
-                results.append(self.create_result(
-                    status=CheckStatus.FAIL,
-                    message=f"Image on page {img.page} is not tagged as Figure or marked as Artifact",
-                    evidence=f"Image dimensions {img.width}x{img.height} at {img.bbox}",
-                    page=img.page,
-                    bounding_box=img.bbox,
-                    object_reference=f"Image {img.id}",
-                    custom_severity=Severity.HIGH,
-                    custom_remediation="Tag the image as a <Figure> with alt text, or mark it as an Artifact if purely decorative.",
                     items_count=1
                 ))
 

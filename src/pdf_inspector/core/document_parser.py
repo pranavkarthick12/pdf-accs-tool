@@ -28,6 +28,18 @@ ARTIFACT_PATTERN = re.compile(r"/Artifact(?:\s*<<[^>]*?>>)?\s*B[DM]C", re.DOTALL
 ART_XOBJECT_PATTERN = re.compile(r'(/(\w+)\s*(?:<<.*?>>)?\s*B[DM]C)|(\bEMC\b)|(/(\w+)\s+Do\b)', re.DOTALL)
 CONTENT_TOKEN_PATTERN = re.compile(r'(/(\w+)\s+(<<.*?>>|/\w+)\s*BDC|/(\w+)\s+BMC|(\bEMC\b)|(/(\w+)\s+Do\b))', re.DOTALL)
 
+STREAM_TOKEN_RE = re.compile(
+    r'(?P<bdc>/(\w+)\s*(<<.*?>>|/\w+)\s*BDC)'
+    r'|(?P<bmc>/(\w+)\s*BMC)'
+    r'|(?P<emc>\bEMC\b)'
+    r'|(?P<do>/(\w+)\s+Do\b)'
+    r'|(?P<text_tj>(?:\((?:\\.|[^()\\])*\)|<[0-9a-fA-F\s]*>|\[(?:\\.|[^\]\\])*\])\s*(?:TJ|Tj|\'|"))'
+    r'|(?P<paint>\b(?:sh|f\*|b\*|B\*|f|F|S|s|B|b)\b)'
+    r'|(?P<bi>\bBI\b)',
+    re.DOTALL
+)
+TM_RE = re.compile(r'([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+Tm\b')
+
 def count_pdf_text_tokens(stream_text: str) -> int:
     """
     Robust tokenizer for counting PDF text string operations from content stream text.
@@ -386,17 +398,6 @@ class DocumentParser:
 
             font_cmap_cache: Dict[Any, Dict[int, str]] = {}
 
-            STREAM_TOKEN_RE = re.compile(
-                r'(?P<bdc>/(\w+)\s*(<<.*?>>|/\w+)\s*BDC)'
-                r'|(?P<bmc>/(\w+)\s*BMC)'
-                r'|(?P<emc>\bEMC\b)'
-                r'|(?P<do>/(\w+)\s+Do\b)'
-                r'|(?P<text_tj>(?:\((?:\\.|[^()\\])*\)|\[(?:\\.|[^\]\\])*\])\s*(?:TJ|Tj|\'|"))'
-                r'|(?P<paint>\b(?:sh|f\*|b\*|B\*|f|F|S|s|B|b)\b)',
-                re.DOTALL
-            )
-            TM_RE = re.compile(r'([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+Tm\b')
-
             doc_stream_text_count = 0
 
             for page_idx, pike_page in enumerate(pike_doc.pages, start=1):
@@ -411,7 +412,11 @@ class DocumentParser:
                 has_tab = False
                 annots_count = 0
                 struct_parents_id = None
-                mcids_found: List[int] = []
+                page_mcids_found: List[int] = []
+                page_artifact_mcids: Set[int] = set()
+                page_mcids_with_content: Set[int] = set()
+                xo_non_art_mcids: List[int] = []
+                xo_content_mcids: Set[int] = set()
                 mcid_bboxes: Dict[int, Tuple[float, float, float, float]] = {}
                 mcid_texts: Dict[int, str] = {}
                 art_xobjs: Set[str] = set()
@@ -453,17 +458,61 @@ class DocumentParser:
                         except Exception:
                             struct_parents_id = None
 
-                    # Also collect MCIDs from Form XObjects on this page
+                    # Also collect MCIDs and verify content from Form XObjects on this page
                     if "/Resources" in pike_page and "/XObject" in pike_page["/Resources"]:
                         try:
                             xo_dict = pike_page["/Resources"]["/XObject"]
                             for _, xo in xo_dict.items():
                                 if hasattr(xo, "read_bytes"):
                                     xo_stream = xo.read_bytes().decode("latin1", errors="ignore")
-                                    for xo_m in MCID_PATTERN.finditer(xo_stream):
-                                        x_mcid = int(xo_m.group(2))
-                                        if x_mcid not in mcids_found:
-                                            mcids_found.append(x_mcid)
+                                    xo_stack: List[Dict[str, Any]] = []
+                                    xo_art_depth = 0
+                                    this_xo_mcids: List[int] = []
+                                    this_xo_art_mcids: Set[int] = set()
+                                    this_xo_content_mcids: Set[int] = set()
+                                    for xo_m in STREAM_TOKEN_RE.finditer(xo_stream):
+                                        if xo_m.group("bdc"):
+                                            bdc_m = re.match(r"/(\w+)\s*(<<.*?>>|/\w+)\s*BDC", xo_m.group("bdc"), re.DOTALL)
+                                            tag = bdc_m.group(1) if bdc_m else "Span"
+                                            props = bdc_m.group(2) if bdc_m else ""
+                                            is_art = (tag.lower() == "artifact" or "/artifact" in props.lower())
+                                            x_mcid = None
+                                            if props.startswith("<<") and "/MCID" in props:
+                                                mc_match = re.search(r"/MCID\s+(\d+)", props)
+                                                if mc_match:
+                                                    x_mcid = int(mc_match.group(1))
+                                            if is_art or xo_art_depth > 0:
+                                                if x_mcid is not None:
+                                                    this_xo_art_mcids.add(x_mcid)
+                                            else:
+                                                if x_mcid is not None and x_mcid not in this_xo_mcids:
+                                                    this_xo_mcids.append(x_mcid)
+                                            xo_stack.append({"mcid": x_mcid, "is_art": is_art})
+                                            if is_art:
+                                                xo_art_depth += 1
+                                        elif xo_m.group("bmc"):
+                                            bmc_m = re.match(r"/(\w+)\s*BMC", xo_m.group("bmc"))
+                                            tag = bmc_m.group(1) if bmc_m else "Span"
+                                            is_art = (tag.lower() == "artifact")
+                                            xo_stack.append({"mcid": None, "is_art": is_art})
+                                            if is_art:
+                                                xo_art_depth += 1
+                                        elif xo_m.group("emc"):
+                                            if xo_stack:
+                                                popped_xo = xo_stack.pop()
+                                                if popped_xo.get("is_art"):
+                                                    xo_art_depth = max(0, xo_art_depth - 1)
+                                        elif xo_m.group("text_tj") or xo_m.group("paint") or xo_m.group("do") or xo_m.group("bi"):
+                                            if xo_art_depth == 0:
+                                                innermost_xo = next((st["mcid"] for st in reversed(xo_stack) if st.get("mcid") is not None), None)
+                                                if innermost_xo is not None:
+                                                    this_xo_content_mcids.add(innermost_xo)
+                                    for m in this_xo_mcids:
+                                        if m not in this_xo_art_mcids and m not in xo_non_art_mcids:
+                                            xo_non_art_mcids.append(m)
+                                    for m in this_xo_content_mcids:
+                                        if m not in this_xo_art_mcids:
+                                            xo_content_mcids.add(m)
                         except Exception:
                             pass
 
@@ -479,13 +528,16 @@ class DocumentParser:
                             raw_stream = contents_obj.read_bytes()
 
                         stream_text = raw_stream.decode("latin1", errors="ignore")
-                        for match in MCID_PATTERN.finditer(stream_text):
-                            mcid_num = int(match.group(2))
-                            if mcid_num not in mcids_found:
-                                mcids_found.append(mcid_num)
 
                         # Count content-stream text string tokens (Tj, ', ", and TJ string items) matching PAC
+                        # and track MCIDs that contain real content operations
                         page_stream_text_count = 0
+                        mcid_op_stack: List[Optional[int]] = []
+                        art_op_stack: List[bool] = []
+                        art_op_depth = 0
+                        TEXT_OPS = {"Tj", "'", '"', "TJ"}
+                        PAINT_OPS = {"S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "sh"}
+                        CONTENT_OPS = TEXT_OPS | PAINT_OPS | {"Do", "BI", "EI"}
                         try:
                             for op in pikepdf.parse_content_stream(pike_page):
                                 op_str = str(op.operator)
@@ -495,6 +547,61 @@ class DocumentParser:
                                     for item in op.operands[0]:
                                         if isinstance(item, (pikepdf.String, bytes)):
                                             page_stream_text_count += 1
+                                if op_str == "BDC":
+                                    tag_name = str(op.operands[0]).strip("/") if op.operands else ""
+                                    props_obj = op.operands[1] if len(op.operands) >= 2 else None
+                                    is_art = (tag_name.lower() == "artifact")
+                                    if not is_art and props_obj is not None:
+                                        if isinstance(props_obj, pikepdf.Name):
+                                            is_art = (str(props_obj).strip("/").lower() == "artifact")
+                                        elif isinstance(props_obj, pikepdf.Dictionary):
+                                            if "/Artifact" in props_obj:
+                                                is_art = True
+                                            else:
+                                                try:
+                                                    if "/artifact" in str(props_obj).lower():
+                                                        is_art = True
+                                                except Exception:
+                                                    pass
+                                    m_id = None
+                                    if isinstance(props_obj, pikepdf.Dictionary):
+                                        val = props_obj.get("/MCID")
+                                        if val is not None:
+                                            try:
+                                                m_id = int(val)
+                                            except (ValueError, TypeError):
+                                                pass
+
+                                    if is_art or art_op_depth > 0:
+                                        if m_id is not None:
+                                            page_artifact_mcids.add(m_id)
+                                    else:
+                                        if m_id is not None and m_id not in page_mcids_found:
+                                            page_mcids_found.append(m_id)
+
+                                    mcid_op_stack.append(m_id)
+                                    art_op_stack.append(is_art)
+                                    if is_art:
+                                        art_op_depth += 1
+                                elif op_str == "BMC":
+                                    tag_name = str(op.operands[0]).strip("/") if op.operands else ""
+                                    is_art = (tag_name.lower() == "artifact")
+                                    mcid_op_stack.append(None)
+                                    art_op_stack.append(is_art)
+                                    if is_art:
+                                        art_op_depth += 1
+                                elif op_str == "EMC":
+                                    if mcid_op_stack:
+                                        mcid_op_stack.pop()
+                                    if art_op_stack:
+                                        was_art = art_op_stack.pop()
+                                        if was_art:
+                                            art_op_depth = max(0, art_op_depth - 1)
+                                elif op_str in CONTENT_OPS:
+                                    if art_op_depth == 0:
+                                        innermost_m = next((m for m in reversed(mcid_op_stack) if m is not None), None)
+                                        if innermost_m is not None:
+                                            page_mcids_with_content.add(innermost_m)
                         except Exception as e:
                             logger.debug(f"Pikepdf stream parse failed on page {page_idx}, falling back to tokenizer: {e}")
                             page_stream_text_count = count_pdf_text_tokens(stream_text)
@@ -523,12 +630,12 @@ class DocumentParser:
                                 if is_art:
                                     if in_tagged:
                                         art_in_tagged_count += 1
-                                        ancestor = next(s for s in reversed(stack) if s["mcid"] is not None)
+                                        ancestor = next((s for s in reversed(stack) if s.get("mcid") is not None), None)
                                         art_model = ArtifactOccurrenceModel(
                                             page_number=page_idx,
                                             is_inside_tagged=True,
-                                            parent_tag=ancestor["tag"],
-                                            parent_mcid=ancestor["mcid"],
+                                            parent_tag=ancestor["tag"] if ancestor else None,
+                                            parent_mcid=ancestor["mcid"] if ancestor else None,
                                             bbox=None,
                                             text_snippet=""
                                         )
@@ -540,9 +647,12 @@ class DocumentParser:
                                             text_snippet=""
                                         )
                                     page_artifacts.append(art_model)
+                                    if mcid is not None:
+                                        page_artifact_mcids.add(mcid)
                                 else:
                                     if in_art and mcid is not None:
                                         tagged_in_art_count += 1
+                                        page_artifact_mcids.add(mcid)
                                         page_content_occs.append(ContentOccurrenceModel(
                                             page_number=page_idx,
                                             operator_type="marked_content",
@@ -551,6 +661,9 @@ class DocumentParser:
                                             tag=tag,
                                             is_inside_artifact=True
                                         ))
+                                    elif not in_art and mcid is not None:
+                                        if mcid not in page_mcids_found:
+                                            page_mcids_found.append(mcid)
 
                                 if mcid is not None:
                                     tagged_depth += 1
@@ -569,12 +682,12 @@ class DocumentParser:
                                 if is_art:
                                     if in_tagged:
                                         art_in_tagged_count += 1
-                                        ancestor = next(s for s in reversed(stack) if s["mcid"] is not None)
+                                        ancestor = next((s for s in reversed(stack) if s.get("mcid") is not None), None)
                                         art_model = ArtifactOccurrenceModel(
                                             page_number=page_idx,
                                             is_inside_tagged=True,
-                                            parent_tag=ancestor["tag"],
-                                            parent_mcid=ancestor["mcid"],
+                                            parent_tag=ancestor["tag"] if ancestor else None,
+                                            parent_mcid=ancestor["mcid"] if ancestor else None,
                                             bbox=None,
                                             text_snippet=""
                                         )
@@ -595,14 +708,18 @@ class DocumentParser:
                                 if stack:
                                     popped = stack.pop()
                                     if popped["mcid"] is not None:
-                                        tagged_depth -= 1
+                                        tagged_depth = max(0, tagged_depth - 1)
                                     if popped["is_artifact"]:
-                                        art_depth -= 1
+                                        art_depth = max(0, art_depth - 1)
 
                             elif m.group("text_tj"):
-                                tj_txt = m.group("text_tj")
                                 in_tagged = (tagged_depth > 0)
                                 in_art = (art_depth > 0)
+                                if not in_art:
+                                    innermost = next((s["mcid"] for s in reversed(stack) if s.get("mcid") is not None), None)
+                                    if innermost is not None:
+                                        page_mcids_with_content.add(innermost)
+                                tj_txt = m.group("text_tj")
                                 if in_tagged and not in_art:
                                     tagged_ops_count += 1
                                 elif in_art:
@@ -638,9 +755,13 @@ class DocumentParser:
                                     ))
 
                             elif m.group("paint"):
-                                paint_op = m.group("paint")
                                 in_tagged = (tagged_depth > 0)
                                 in_art = (art_depth > 0)
+                                if not in_art:
+                                    innermost = next((s["mcid"] for s in reversed(stack) if s.get("mcid") is not None), None)
+                                    if innermost is not None:
+                                        page_mcids_with_content.add(innermost)
+                                paint_op = m.group("paint")
                                 if in_tagged and not in_art:
                                     tagged_ops_count += 1
                                 elif in_art:
@@ -655,7 +776,19 @@ class DocumentParser:
                                         is_unmarked_real_content=True
                                     ))
 
+                            elif m.group("bi"):
+                                in_art = (art_depth > 0)
+                                if not in_art:
+                                    innermost = next((s["mcid"] for s in reversed(stack) if s.get("mcid") is not None), None)
+                                    if innermost is not None:
+                                        page_mcids_with_content.add(innermost)
+
                             elif m.group("do"):
+                                in_art = (art_depth > 0)
+                                if not in_art:
+                                    innermost = next((s["mcid"] for s in reversed(stack) if s.get("mcid") is not None), None)
+                                    if innermost is not None:
+                                        page_mcids_with_content.add(innermost)
                                 do_m = re.match(r"/(\w+)\s+Do", m.group("do"))
                                 xname = do_m.group(1) if do_m else ""
                                 in_tagged = (tagged_depth > 0)
@@ -776,6 +909,16 @@ class DocumentParser:
                 img_list = fitz_page.get_images()
                 links_list = fitz_page.get_links()
 
+                valid_page_mcids = [m for m in page_mcids_found if m not in page_artifact_mcids]
+                valid_page_content_mcids = {m for m in page_mcids_with_content if m not in page_artifact_mcids}
+
+                mcids_found = list(valid_page_mcids)
+                for m in xo_non_art_mcids:
+                    if m not in mcids_found:
+                        mcids_found.append(m)
+
+                mcids_with_content = valid_page_content_mcids | xo_content_mcids
+
                 # Decode true MCID texts from page content stream using font ToUnicode CMaps
                 if mcids_found:
                     mcid_texts = self._decode_page_mcid_texts(pike_page, font_cmap_cache)
@@ -813,7 +956,8 @@ class DocumentParser:
                     artifact_in_tagged_count=art_in_tagged_count,
                     annotations_count=annots_count,
                     stream_text_strings_count=page_stream_text_count,
-                    artifact_texts=page_artifact_texts
+                    artifact_texts=page_artifact_texts,
+                    empty_mcids=set(mcids_found) - mcids_with_content
                 ))
 
             # 3. Structure Tree
