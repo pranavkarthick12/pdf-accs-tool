@@ -1,7 +1,7 @@
 /* PDF Accessibility Inspector - Enterprise Clean Modern Theme */
 
 QMainWindow {
-    background-color: #f8fafc;
+    background-color: #f4f6f8;
     color: #0f172a;
     font-family: "Segoe UI", -apple-system, Roboto, sans-serif;
     font-size: 10pt;
@@ -52,7 +52,7 @@ QListWidget#sidebarList {
 QListWidget#sidebarList::item {
     height: 38px;
     padding-left: 14px;
-    border-radius: 6px;
+    border-radius: 8px;
     margin: 2px 8px;
     color: #475569;
     font-weight: 500;
@@ -64,9 +64,9 @@ QListWidget#sidebarList::item:hover {
 }
 
 QListWidget#sidebarList::item:selected {
-    background-color: #eff6ff;
-    color: #1d4ed8;
-    font-weight: 600;
+    background-color: #ecfccb;
+    color: #14532d;
+    font-weight: 700;
 }
 
 /* Tab Widgets matching Screenshot */
@@ -146,14 +146,15 @@ QPushButton:pressed {
 }
 
 QPushButton#primaryBtn {
-    background-color: #2563eb;
-    border: 1px solid #1d4ed8;
+    background-color: #0c2b1c;
+    border: 1px solid #0c2b1c;
+    border-radius: 14px;
     color: #ffffff;
-    font-weight: 600;
+    font-weight: 700;
 }
 
 QPushButton#primaryBtn:hover {
-    background-color: #1d4ed8;
+    background-color: #164e32;
 }
 
 /* LineEdits and Inputs */

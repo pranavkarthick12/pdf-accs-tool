@@ -53,7 +53,8 @@ class ParentTreeIntegrityRule(BaseRule):
         # 1. Check page /StructParents presence (Matterhorn 01-004)
         pages_missing_struct_parents = []
         for p in doc.pages:
-            if p.mcids and p.struct_parents_id is None:
+            non_art_mcids = [m for m in p.mcids if m not in getattr(p, "artifact_mcids", set())]
+            if non_art_mcids and p.struct_parents_id is None:
                 pages_missing_struct_parents.append(p.page_number)
 
         if pages_missing_struct_parents:
@@ -95,17 +96,52 @@ class ParentTreeIntegrityRule(BaseRule):
         # 3. Check every page MCID is present and non-null in ParentTree (Matterhorn 01-006)
         pt_missing_mcids = []
         for p in doc.pages:
+            art_mcids = getattr(p, "artifact_mcids", set())
             if p.struct_parents_id is not None and p.struct_parents_id in pt_map:
                 pt_entry = pt_map[p.struct_parents_id]
                 empty_mcids = getattr(p, "empty_mcids", set())
                 if isinstance(pt_entry, list):
                     for mcid in p.mcids:
+                        # Empty marked content does not require a ParentTree entry.
                         if mcid in empty_mcids:
                             continue
-                        if mcid >= len(pt_entry):
-                            pt_missing_mcids.append((p.page_number, mcid, f"exceeds array length {len(pt_entry)}"))
-                        elif pt_entry[mcid] is None:
-                            pt_missing_mcids.append((p.page_number, mcid, "null entry in ParentTree"))
+
+                        # Artifact marked content is excluded from the structure tree.
+                        if mcid in art_mcids:
+                            continue
+
+                        if mcid < len(pt_entry):
+                            target = pt_entry[mcid]
+                            if isinstance(target, dict):
+                                t_tag = target.get("tag", "").lower()
+                                t_type = target.get("type", "").lower()
+                                if t_tag == "artifact" or t_type == "artifact":
+                                    continue
+                            elif target is None:
+                                pt_missing_mcids.append(
+                                    (p.page_number, mcid, "null entry in ParentTree")
+                                )
+                        else:
+                            # A Form XObject may map the MCID under another StructParents key.
+                            is_mapped_elsewhere = False
+                            for sp_k, arr in pt_map.items():
+                                if (
+                                    sp_k != p.struct_parents_id
+                                    and isinstance(arr, list)
+                                    and mcid < len(arr)
+                                    and arr[mcid] is not None
+                                ):
+                                    is_mapped_elsewhere = True
+                                    break
+
+                            if not is_mapped_elsewhere:
+                                pt_missing_mcids.append(
+                                    (
+                                        p.page_number,
+                                        mcid,
+                                        f"exceeds array length {len(pt_entry)}",
+                                    )
+                                )
 
         if pt_missing_mcids:
             for pg, mcid, reason in pt_missing_mcids[:10]:
@@ -167,6 +203,7 @@ class ParentTreeIntegrityRule(BaseRule):
         # 5. Check for invalid/corrupt ParentTree entries referenced by page MCIDs (Matterhorn 01-008)
         invalid_pt_entries = []
         for p in doc.pages:
+            art_mcids = getattr(p, "artifact_mcids", set())
             if p.struct_parents_id is not None and p.struct_parents_id in pt_map:
                 pt_entry = pt_map[p.struct_parents_id]
                 empty_mcids = getattr(p, "empty_mcids", set())
@@ -179,14 +216,25 @@ class ParentTreeIntegrityRule(BaseRule):
                             if isinstance(target, dict):
                                 og = target.get("obj_num")
                                 s_tag = target.get("tag", "")
-                                is_artifact = s_tag.lower() == "artifact"
+                                s_type = target.get("type", "")
+                                is_artifact = (
+                                    s_tag.lower() == "artifact"
+                                    or s_type.lower() == "artifact"
+                                    or mcid in art_mcids
+                                )
                                 has_parent = target.get("has_parent", True)
                                 is_in_tree = (og and og in all_tree_objs) or any(
                                     mcid in n.mcids and (n.standard_tag or n.tag) == s_tag
                                     for n in all_tree_nodes
                                 )
                                 is_detached = not is_in_tree and not has_parent and s_tag != "StructTreeRoot"
-                                if is_artifact or is_detached or not s_tag:
+                                if is_artifact:
+                                    # An Artifact entry in ParentTree is only invalid if it claims
+                                    # to be a structural element inside StructTreeRoot (Matterhorn 01-001/01-008).
+                                    # When outside StructTreeRoot, it is a valid artifact entry (ISO 32000-1 §14.8.2.2).
+                                    if is_in_tree:
+                                        invalid_pt_entries.append((p.page_number, mcid, og, s_tag or "Artifact"))
+                                elif is_detached or (not s_tag and not is_in_tree):
                                     invalid_pt_entries.append((p.page_number, mcid, og, s_tag))
 
         if invalid_pt_entries:

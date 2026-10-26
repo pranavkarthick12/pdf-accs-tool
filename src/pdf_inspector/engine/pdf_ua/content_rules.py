@@ -234,19 +234,45 @@ class MCIDStructureReferenceRule(BaseRule):
             pt_entry = pt_map.get(sp_id, []) if sp_id is not None else []
             empty_mcids = getattr(p, "empty_mcids", set())
             orphans = []
+            art_mcids = getattr(p, "artifact_mcids", set())
             for mcid in p.mcids:
                 if mcid in empty_mcids:
                     continue
                 if mcid in referenced or mcid in global_unassigned_mcids:
                     continue
-                # Also verify if the MCID is associated with a valid structure element via /ParentTree (ISO 14289-1 7.1)
+                # Artifact MCIDs (marked as /Artifact in content stream or /S /Artifact in ParentTree)
+                # are by definition excluded from the structure tree (ISO 32000-1 14.8.2.2 / ISO 14289-1 7.1)
+                if mcid in art_mcids:
+                    continue
+                is_artifact_pt = False
                 has_pt_struct = False
                 if isinstance(pt_entry, list) and mcid < len(pt_entry):
                     target = pt_entry[mcid]
-                    if isinstance(target, dict) and target.get("tag") and target.get("tag").lower() != "artifact":
-                        has_pt_struct = True
-                if not has_pt_struct:
-                    orphans.append(mcid)
+                    if isinstance(target, dict):
+                        t_tag = target.get("tag", "").lower()
+                        t_type = target.get("type", "").lower()
+                        if t_tag == "artifact" or t_type == "artifact":
+                            is_artifact_pt = True
+                        elif target.get("tag") or target.get("obj_num"):
+                            has_pt_struct = True
+                if not is_artifact_pt and not has_pt_struct:
+                    # In PDF ISO 32000-1 §14.7.4.2, marked content within Form XObjects
+                    # is indexed in /ParentTree under the Form XObject's StructParents.
+                    for other_sp, other_entry in pt_map.items():
+                        if other_sp != sp_id and isinstance(other_entry, list) and mcid < len(other_entry):
+                            t = other_entry[mcid]
+                            if isinstance(t, dict):
+                                t_tag = t.get("tag", "").lower()
+                                t_type = t.get("type", "").lower()
+                                if t_tag == "artifact" or t_type == "artifact":
+                                    is_artifact_pt = True
+                                    break
+                                elif t.get("tag") or t.get("obj_num"):
+                                    has_pt_struct = True
+                                    break
+                if is_artifact_pt or has_pt_struct:
+                    continue
+                orphans.append(mcid)
             if orphans:
                 orphan_pages.append((p.page_number, orphans))
 

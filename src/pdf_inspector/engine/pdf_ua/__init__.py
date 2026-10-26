@@ -41,7 +41,6 @@ PDF_UA_RULES = [
     ArtifactInsideTaggedContentRule(),
     AnnotationTaggedRule(),
     PageTabOrderRule(),
-    FormFieldAccessibilityRule(),
     EmbeddedFilesAccessibilityRule(),
     DocumentLanguageRule(),
     StructureLanguageRule(),

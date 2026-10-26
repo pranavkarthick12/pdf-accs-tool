@@ -361,13 +361,13 @@ def test_link_completeness_quality_rule():
     assert res_good[0].status == CheckStatus.PASS
     assert res_good[0].items_count == 1
 
-    # Case 3: Incomplete empty link -> FAIL with items_count=1
+    # Case 3: Incomplete empty link -> WARNING with items_count=1 (matching PAC quality checks)
     lnk_bad = StructureNode(id="lnk2", tag="Link", standard_tag="Link", page=1, text_content="")
     root_bad = StructureNode(id="root", tag="StructTreeRoot", standard_tag="StructTreeRoot", children=[lnk_bad])
     doc_bad = PDFDocumentModel(filepath="", filename="l.pdf", filesize=10, pdf_version="1.7", page_count=1, is_tagged=True, structure_tree=root_bad)
     res_bad = rule.evaluate(doc_bad)
     assert len(res_bad) == 1
-    assert res_bad[0].status == CheckStatus.FAIL
+    assert res_bad[0].status == CheckStatus.WARNING
     assert res_bad[0].items_count == 1
 
 

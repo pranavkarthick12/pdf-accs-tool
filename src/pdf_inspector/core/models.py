@@ -393,6 +393,7 @@ class PageModel:
     stream_text_strings_count: int = 0
     artifact_texts: Set[str] = field(default_factory=set)
     empty_mcids: Set[int] = field(default_factory=set)
+    artifact_mcids: Set[int] = field(default_factory=set)
 
 
 @dataclass
