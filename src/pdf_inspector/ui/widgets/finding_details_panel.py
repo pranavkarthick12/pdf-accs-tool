@@ -7,12 +7,73 @@ including technical evidence, standard citations, and actionable remediation ste
 from typing import Optional, Dict, List, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser,
-    QPushButton, QGroupBox, QScrollArea, QFrame
+    QPushButton, QGroupBox, QScrollArea, QFrame, QSizePolicy
 )
 from PySide6.QtCore import Signal, Qt
 from ...core.models import CheckResult, CheckStatus, Severity
 from ...engine.wcag.wcag_meta import WCAG_GUIDELINE_META
 from .status_badge import StatusBadge, SeverityBadge
+
+
+class MetaRowLabel(QLabel):
+    """Custom label that automatically formats 'Key: Value' into a crisp two-column aligned layout."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.RichText)
+        self.setProperty("class", "metaRowLabel")
+        if text:
+            self.setText(text)
+
+    def setText(self, text: str):
+        if ":" in text:
+            key, val = text.split(":", 1)
+            key_clean = key.strip().upper()
+            val_clean = val.strip() if val.strip() != "-" else "—"
+            html = (
+                f"<table width='100%' cellpadding='0' cellspacing='0' style='border: none; margin: 0; padding: 0;'>"
+                f"<tr>"
+                f"<td style='color: #4a715b; font-weight: 700; font-size: 10px; letter-spacing: 0.5px; width: 76px; min-width: 76px; vertical-align: top; padding: 1px 10px 1px 0;'>{key_clean}</td>"
+                f"<td style='color: #0b2c1c; font-weight: 600; font-size: 11px; vertical-align: top; padding: 1px 0; line-height: 1.3;'>{val_clean}</td>"
+                f"</tr>"
+                f"</table>"
+            )
+            super().setText(html)
+        else:
+            super().setText(text)
+
+
+class AutoHeightTextBrowser(QTextBrowser):
+    """Text browser that dynamically sizes its height to content without clipping."""
+
+    def __init__(self, min_h: int = 50, max_h: int = 350, parent=None):
+        super().__init__(parent)
+        self.min_h = min_h
+        self.max_h = max_h
+        self.setOpenExternalLinks(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QTextBrowser.WidgetWidth)
+
+    def update_height(self):
+        txt = self.toPlainText()
+        if not txt.strip():
+            self.setFixedHeight(self.min_h)
+            return
+        vp_w = self.viewport().width()
+        w = vp_w if vp_w > 50 else (self.width() - 16 if self.width() > 50 else 260)
+        self.document().setTextWidth(w)
+        ideal = int(self.document().size().height() + 16)
+        self.setFixedHeight(max(self.min_h, min(ideal, self.max_h)))
+
+    def setPlainText(self, text: str):
+        super().setPlainText(text)
+        self.update_height()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_height()
 
 
 class FindingDetailsPanel(QWidget):
@@ -22,48 +83,62 @@ class FindingDetailsPanel(QWidget):
     finding_highlight_requested = Signal(object)  # (CheckResult)
 
     def __init__(self, parent=None):
-
         super().__init__(parent)
+        self.setObjectName("findingDetailsPanel")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.current_finding: Optional[CheckResult] = None
         self._init_ui()
 
     def _init_ui(self):
-        self.setMinimumWidth(280)
-        self.setMaximumWidth(450)
+        self.setMinimumWidth(290)
+        self.setMaximumWidth(460)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         # Header title
-        header_layout = QHBoxLayout()
-        self.title_label = QLabel("Finding Details")
-        self.title_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #0f172a;")
-        header_layout.addWidget(self.title_label)
-        header_layout.addStretch()
-        main_layout.addLayout(header_layout)
+        self.title_label = QLabel("FINDING DETAILS")
+        self.title_label.setObjectName("findingDetailsHeaderLabel")
+        main_layout.addWidget(self.title_label)
+
+        # Divider line below header
+        divider = QFrame()
+        divider.setObjectName("findingDetailsDivider")
+        divider.setFrameShape(QFrame.HLine)
+        main_layout.addWidget(divider)
 
         # Scroll Area for details
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         content_widget = QWidget()
+        content_widget.setObjectName("findingDetailsContent")
+        content_widget.setStyleSheet("QWidget#findingDetailsContent { background-color: transparent; }")
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setContentsMargins(10, 8, 10, 10)
         content_layout.setSpacing(10)
 
         # 1. Summary Card
-        self.summary_box = QGroupBox("Checkpoint")
+        self.summary_box = QFrame()
+        self.summary_box.setProperty("class", "detailCard")
         summary_layout = QVBoxLayout(self.summary_box)
+        summary_layout.setContentsMargins(12, 10, 12, 10)
         summary_layout.setSpacing(6)
 
+        lbl_c1_title = QLabel("CHECKPOINT")
+        lbl_c1_title.setProperty("class", "cardSectionTitle")
+        summary_layout.addWidget(lbl_c1_title)
+
         self.name_label = QLabel("No finding selected")
-        self.name_label.setStyleSheet("font-weight: 600; font-size: 13px; color: #1e293b;")
+        self.name_label.setProperty("class", "cardTitle")
         self.name_label.setWordWrap(True)
         summary_layout.addWidget(self.name_label)
 
         badges_layout = QHBoxLayout()
+        badges_layout.setSpacing(6)
         self.status_badge = StatusBadge(CheckStatus.NOT_APPLICABLE)
         self.severity_badge = SeverityBadge(Severity.INFO)
         badges_layout.addWidget(self.status_badge)
@@ -71,57 +146,80 @@ class FindingDetailsPanel(QWidget):
         badges_layout.addStretch()
         summary_layout.addLayout(badges_layout)
 
-        # Metadata grid
-        self.id_label = QLabel("Rule ID: -")
-        self.id_label.setStyleSheet("color: #64748b; font-size: 11px;")
+        div = QFrame()
+        div.setFrameShape(QFrame.HLine)
+        div.setStyleSheet("background-color: #e5eee8; max-height: 1px; border: none; margin-top: 2px; margin-bottom: 2px;")
+        summary_layout.addWidget(div)
+
+        self.id_label = MetaRowLabel("Rule ID: —")
         summary_layout.addWidget(self.id_label)
 
-        self.standard_label = QLabel("Standard: -")
-        self.standard_label.setStyleSheet("color: #64748b; font-size: 11px;")
+        self.standard_label = MetaRowLabel("Standard: —")
         summary_layout.addWidget(self.standard_label)
 
-        self.page_label = QLabel("Page: -")
-        self.page_label.setStyleSheet("color: #64748b; font-size: 11px;")
+        self.page_label = MetaRowLabel("Page: —")
         summary_layout.addWidget(self.page_label)
 
-        self.object_label = QLabel("Object: -")
-        self.object_label.setStyleSheet("color: #64748b; font-size: 11px;")
-        self.object_label.setWordWrap(True)
+        self.object_label = MetaRowLabel("Target: —")
         summary_layout.addWidget(self.object_label)
 
         content_layout.addWidget(self.summary_box)
 
         # 2. Highlight on Page Button
-        self.btn_highlight = QPushButton("🎯 Highlight on Page")
-        self.btn_highlight.setObjectName("primaryBtn")
+        self.btn_highlight = QPushButton("🎯  Highlight on Page")
+        self.btn_highlight.setObjectName("btnHighlightOnPage")
+        self.btn_highlight.setCursor(Qt.PointingHandCursor)
         self.btn_highlight.setEnabled(False)
+        self.btn_highlight.setToolTip("Select a finding to highlight its location on page")
         self.btn_highlight.clicked.connect(self._on_highlight_clicked)
         content_layout.addWidget(self.btn_highlight)
 
         # 3. Message / Explanation Box
-        self.explanation_box = QGroupBox("Explanation")
+        self.explanation_box = QFrame()
+        self.explanation_box.setProperty("class", "detailCard")
         exp_layout = QVBoxLayout(self.explanation_box)
-        self.txt_explanation = QTextBrowser()
-        self.txt_explanation.setMaximumHeight(90)
-        self.txt_explanation.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px;")
+        exp_layout.setContentsMargins(12, 10, 12, 10)
+        exp_layout.setSpacing(4)
+
+        lbl_c2 = QLabel("EXPLANATION")
+        lbl_c2.setProperty("class", "cardSectionTitle")
+        exp_layout.addWidget(lbl_c2)
+
+        self.txt_explanation = AutoHeightTextBrowser(min_h=50, max_h=350)
+        self.txt_explanation.setStyleSheet("font-size: 12px; color: #183626; line-height: 1.45; border: none; background: transparent;")
         exp_layout.addWidget(self.txt_explanation)
         content_layout.addWidget(self.explanation_box)
 
         # 4. Evidence Box
-        self.evidence_box = QGroupBox("Technical Evidence")
+        self.evidence_box = QFrame()
+        self.evidence_box.setProperty("class", "detailCard")
         ev_layout = QVBoxLayout(self.evidence_box)
-        self.txt_evidence = QTextBrowser()
-        self.txt_evidence.setMaximumHeight(85)
-        self.txt_evidence.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; font-family: monospace; font-size: 11px;")
+        ev_layout.setContentsMargins(12, 10, 12, 10)
+        ev_layout.setSpacing(4)
+
+        lbl_c3 = QLabel("TECHNICAL EVIDENCE")
+        lbl_c3.setProperty("class", "cardSectionTitle")
+        ev_layout.addWidget(lbl_c3)
+
+        self.txt_evidence = AutoHeightTextBrowser(min_h=45, max_h=250)
+        self.txt_evidence.setStyleSheet("background-color: #f4f8f5; border: 1px solid #d2e3d8; border-radius: 5px; padding: 6px 8px; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; color: #153e28; line-height: 1.4;")
         ev_layout.addWidget(self.txt_evidence)
         content_layout.addWidget(self.evidence_box)
 
         # 5. Remediation Advice Box
-        self.remediation_box = QGroupBox("Remediation Advice")
+        self.remediation_box = QFrame()
+        self.remediation_box.setProperty("class", "remediationCard")
         rem_layout = QVBoxLayout(self.remediation_box)
-        self.txt_remediation = QTextBrowser()
-        self.txt_remediation.setMinimumHeight(110)
-        self.txt_remediation.setStyleSheet("background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px; color: #166534;")
+        rem_layout.setContentsMargins(12, 10, 12, 10)
+        rem_layout.setSpacing(4)
+
+        lbl_c4 = QLabel("REMEDIATION ADVICE")
+        lbl_c4.setProperty("class", "cardSectionTitle")
+        lbl_c4.setStyleSheet("font-size: 10px; font-weight: 700; color: #166534; letter-spacing: 0.8px; background: transparent; border: none;")
+        rem_layout.addWidget(lbl_c4)
+
+        self.txt_remediation = AutoHeightTextBrowser(min_h=50, max_h=350)
+        self.txt_remediation.setStyleSheet("font-size: 12px; color: #14532d; line-height: 1.45; border: none; background: transparent;")
         rem_layout.addWidget(self.txt_remediation)
         content_layout.addWidget(self.remediation_box)
 
@@ -234,14 +332,17 @@ class FindingDetailsPanel(QWidget):
         if not finding:
             self.title_label.setText("Finding Details")
             self.name_label.setText("No finding selected")
-            self.id_label.setText("Rule ID: -")
-            self.standard_label.setText("Standard: -")
-            self.page_label.setText("Page: -")
-            self.object_label.setText("Object: -")
-            self.txt_explanation.setPlainText("")
-            self.txt_evidence.setPlainText("")
-            self.txt_remediation.setPlainText("")
+            self.status_badge.setStatus(CheckStatus.NOT_APPLICABLE)
+            self.severity_badge.setSeverity(Severity.INFO)
+            self.id_label.setText("Rule ID: —")
+            self.standard_label.setText("Standard: —")
+            self.page_label.setText("Page: —")
+            self.object_label.setText("Target: —")
+            self.txt_explanation.setPlainText("Select any finding from the Checkpoints matrix or Detailed Results list to inspect its rule evidence, standard citations, and actionable remediation steps.")
+            self.txt_evidence.setPlainText("No technical evidence available. Select an active finding to inspect its document elements.")
+            self.txt_remediation.setPlainText("Remediation advice will appear here when an accessibility finding is selected.")
             self.btn_highlight.setEnabled(False)
+            self.btn_highlight.setToolTip("Select a finding to highlight its location on page")
             return
 
         self.title_label.setText("Finding Details")
@@ -251,7 +352,13 @@ class FindingDetailsPanel(QWidget):
 
         self.id_label.setText(f"Rule ID: {finding.check_id}")
         self.standard_label.setText(f"Standard: {finding.standard} ({finding.category})")
-        self.page_label.setText(f"Page: {finding.page if finding.page else 'Page 1 (Document-level)'}")
+        if finding.page:
+            self.page_label.setText(f"Page: {finding.page}")
+            self.btn_highlight.setToolTip("Navigate to page and highlight issue in viewer")
+        else:
+            self.page_label.setText("Page: Document-level (No spatial coordinates)")
+            self.btn_highlight.setToolTip("Document-level finding: Inspect on Page 1")
+
         self.object_label.setText(f"Target: {finding.object_reference or 'Document'}")
 
         # Rich, exhaustive explanation stating the exact issue

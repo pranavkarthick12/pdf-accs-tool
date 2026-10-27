@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
 
         # Left Sidebar
         self.sidebar = Sidebar()
+        self.sidebar.setObjectName("leftSidebar")
         self.sidebar.page_selected.connect(self._on_navigation)
         self.main_splitter.addWidget(self.sidebar)
         self.main_splitter.setCollapsible(0, False)
@@ -197,6 +198,7 @@ class MainWindow(QMainWindow):
 
         # Right Inspector Panel
         self.right_panel = FindingDetailsPanel()
+        self.right_panel.setObjectName("findingDetailsPanel")
         self.right_panel.highlight_requested.connect(self._on_highlight_requested)
         self.main_splitter.addWidget(self.right_panel)
         self.main_splitter.setCollapsible(1, False)
@@ -206,7 +208,7 @@ class MainWindow(QMainWindow):
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
         self.main_splitter.setStretchFactor(2, 0)
-        self.main_splitter.setSizes([230, 680, 320])
+        self.main_splitter.setSizes([245, 625, 350])
 
         root_layout.addWidget(self.main_splitter)
 

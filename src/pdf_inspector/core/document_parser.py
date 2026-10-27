@@ -942,11 +942,21 @@ class DocumentParser:
 
                 # Decode true MCID texts from page content stream using font ToUnicode CMaps
                 if mcids_found:
-                    mcid_texts = self._decode_page_mcid_texts(pike_page, font_cmap_cache)
-                    for idx, b in enumerate(blocks):
-                        if idx < len(mcids_found):
-                            target_mcid = mcids_found[idx]
-                            mcid_bboxes[target_mcid] = (b[0], b[1], b[2], b[3])
+                    # Resolve true visual bounding boxes for each MCID from actual page text and graphics
+                    for target_mcid in mcids_found:
+                        m_txt = (mcid_texts.get(target_mcid) or "").strip()
+                        if m_txt:
+                            search_snippet = m_txt[:45].replace("\n", " ").strip()
+                            try:
+                                hits = fitz_page.search_for(search_snippet)
+                                if hits:
+                                    min_x = min(h.x0 for h in hits)
+                                    min_y = min(h.y0 for h in hits)
+                                    max_x = max(h.x1 for h in hits)
+                                    max_y = max(h.y1 for h in hits)
+                                    mcid_bboxes[target_mcid] = (float(min_x), float(min_y), float(max_x), float(max_y))
+                            except Exception:
+                                pass
 
                 page_mcid_data[page_idx] = {
                     mcid: (mcid_texts.get(mcid, ""), mcid_bboxes.get(mcid, (0, 0, 0, 0)))
@@ -1599,25 +1609,53 @@ class DocumentParser:
         return tables
 
     def _extract_lists(self, struct_tree: Optional[StructureNode]) -> List[ListModel]:
-        """Extracts List (<L>) structural nodes and checks LI / Lbl / LBody nesting."""
+        """Extracts List (<L>) structural nodes and checks LI / Lbl / LBody direct child hierarchy."""
         lists: List[ListModel] = []
         if not struct_tree:
             return lists
 
         list_nodes = struct_tree.find_all_by_standard_tag("L")
         for idx, l_node in enumerate(list_nodes):
-            li_nodes = [c for c in l_node.children if c.standard_tag.upper() == "LI"]
+            li_nodes = [
+                c for c in l_node.children
+                if c is not None and isinstance(c, StructureNode) and (c.standard_tag or c.tag or "").upper() == "LI"
+            ]
             has_labels = False
-            # Check Matterhorn Checkpoint 28-001: All direct children of L must be LI or Caption
-            is_valid_l = len(l_node.children) > 0 and all(c.standard_tag.upper() in ("LI", "CAPTION") for c in l_node.children)
 
-            # Check Matterhorn Checkpoint 28-002: All direct children of LI must be Lbl and/or LBody
+            # Check Matterhorn Checkpoint 28-001: Direct children of L must be LI or Caption, and at least one LI
+            is_valid_l = (
+                len(l_node.children) > 0
+                and all(
+                    c is not None and isinstance(c, StructureNode) and (c.standard_tag or c.tag or "").upper() in ("LI", "CAPTION")
+                    for c in l_node.children
+                )
+                and len(li_nodes) > 0
+            )
+
+            # Check Matterhorn Checkpoint 28-002 & ISO 32000-1 Clause 14.8.4.3.3:
+            # For each LI:
+            # - At most one direct <Lbl>
+            # - At most one direct <LBody>
+            # - Direct children must only be <Lbl> and/or <LBody> (Matterhorn 28-002)
+            # - Must contain at least one <Lbl> or <LBody> (not empty)
+            # - Direct MCIDs outside <LBody> are invalid
             is_valid_li = True
             for li in li_nodes:
-                child_tags = [c.standard_tag.upper() for c in li.children]
-                if "LBL" in child_tags:
+                direct_children = [c for c in li.children if c is not None and isinstance(c, StructureNode)]
+                direct_lbl = [c for c in direct_children if (c.standard_tag or c.tag or "").upper() == "LBL"]
+                direct_lbody = [c for c in direct_children if (c.standard_tag or c.tag or "").upper() == "LBODY"]
+                other_direct = [c for c in direct_children if (c.standard_tag or c.tag or "").upper() not in ("LBL", "LBODY")]
+
+                if direct_lbl:
                     has_labels = True
-                if not (len(li.children) > 0 and all(t in ("LBL", "LBODY", "CAPTION") for t in child_tags)):
+
+                if len(direct_lbl) > 1 or len(direct_lbody) > 1:
+                    is_valid_li = False
+                elif other_direct:
+                    is_valid_li = False
+                elif len(direct_lbl) == 0 and len(direct_lbody) == 0:
+                    is_valid_li = False
+                elif li.mcids and len(direct_lbody) == 0 and len(direct_lbl) == 0:
                     is_valid_li = False
 
             is_valid = is_valid_l and is_valid_li

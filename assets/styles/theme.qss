@@ -40,33 +40,97 @@ QToolButton:pressed {
     background-color: #e2e8f0;
 }
 
-/* Sidebar List */
-QListWidget#sidebarList {
-    background-color: #ffffff;
+/* Sidebar Navigation Surface */
+QWidget#leftSidebar, Sidebar {
+    background-color: #ebf3ee;
+    border-right: 1px solid #ceded4;
+}
+
+QLabel#sidebarHeaderLabel {
+    font-size: 11px;
+    font-weight: 800;
+    color: #2e5542;
+    letter-spacing: 1px;
+    padding: 10px 14px 6px 14px;
+    background: transparent;
     border: none;
-    border-right: 1px solid #e2e8f0;
+}
+
+QFrame#sidebarDivider {
+    background-color: #d1e2d7;
+    max-height: 1px;
+    border: none;
+    margin: 0px 10px 6px 10px;
+}
+
+QListWidget#sidebarList {
+    background-color: transparent;
+    border: none;
     outline: none;
-    padding-top: 8px;
+    padding-top: 2px;
+    padding-bottom: 6px;
 }
 
 QListWidget#sidebarList::item {
-    height: 38px;
-    padding-left: 14px;
-    border-radius: 8px;
-    margin: 2px 8px;
-    color: #475569;
+    height: 31px;
+    padding-left: 10px;
+    padding-right: 8px;
+    margin: 1px 6px;
+    border-radius: 5px;
+    color: #274334;
+    font-size: 12px;
     font-weight: 500;
+    border: 1px solid transparent;
 }
 
 QListWidget#sidebarList::item:hover {
-    background-color: #f1f5f9;
-    color: #0f172a;
+    background-color: #ddebe2;
+    color: #0b321c;
+    border: 1px solid #c2dbcd;
 }
 
 QListWidget#sidebarList::item:selected {
-    background-color: #ecfccb;
-    color: #14532d;
+    background-color: #d2ecdc;
+    color: #052614;
     font-weight: 700;
+    border: 1px solid #a3d7b4;
+    border-left: 4px solid #0f4a27;
+    border-top-left-radius: 2px;
+    border-bottom-left-radius: 2px;
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+
+QListWidget#sidebarList::item:selected:hover {
+    background-color: #c6e5d1;
+    color: #042010;
+    border-left: 4px solid #09331a;
+}
+
+QListWidget#sidebarList QScrollBar:vertical {
+    background: #e2ede6;
+    width: 6px;
+    margin: 0px;
+    border-radius: 3px;
+}
+
+QListWidget#sidebarList QScrollBar::handle:vertical {
+    background: #9abdb0;
+    min-height: 24px;
+    border-radius: 3px;
+}
+
+QListWidget#sidebarList QScrollBar::handle:vertical:hover {
+    background: #6e9a83;
+}
+
+QListWidget#sidebarList QScrollBar::add-line:vertical,
+QListWidget#sidebarList QScrollBar::sub-line:vertical,
+QListWidget#sidebarList QScrollBar::add-page:vertical,
+QListWidget#sidebarList QScrollBar::sub-page:vertical {
+    background: none;
+    border: none;
+    height: 0px;
 }
 
 /* Tab Widgets matching Screenshot */
@@ -101,25 +165,50 @@ QTabBar::tab:hover:!selected {
     color: #1e293b;
 }
 
-/* Tables and Headers matching Screenshot */
+/* Tables, Tree Views, and Headers */
 QTableWidget, QTableView, QTreeWidget, QTreeView {
     background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    gridline-color: #f1f5f9;
-    selection-background-color: #e0f2fe;
-    selection-color: #0c4a6e;
-    alternate-background-color: #fafbfc;
+    border: 1px solid #d8e5dd;
+    gridline-color: #eef4f0;
+    selection-background-color: #d8eee0;
+    selection-color: #062817;
+    alternate-background-color: #f8faf8;
     font-size: 13px;
+    outline: none;
+}
+
+QTableWidget::item, QTableView::item {
+    padding: 6px 8px;
+    border: none;
+    border-bottom: 1px solid #eef4f0;
+}
+
+QTableWidget::item:hover, QTableView::item:hover {
+    background-color: #edf5f0;
+    color: #082918;
+}
+
+QTableWidget::item:selected, QTableView::item:selected {
+    background-color: #d8eee0;
+    color: #062817;
+    font-weight: 600;
+}
+
+QTableWidget::item:selected:hover, QTableView::item:selected:hover {
+    background-color: #cce8d6;
+    color: #042012;
 }
 
 QHeaderView::section {
-    background-color: #f8fafc;
-    color: #475569;
+    background-color: #f4f8f5;
+    color: #274334;
     padding: 8px 12px;
-    font-weight: 600;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
     border: none;
-    border-right: 1px solid #e2e8f0;
-    border-bottom: 1px solid #cbd5e1;
+    border-right: 1px solid #dce8e0;
+    border-bottom: 1px solid #cadcd0;
 }
 
 QHeaderView::section:last {
@@ -147,14 +236,28 @@ QPushButton:pressed {
 
 QPushButton#primaryBtn {
     background-color: #0c2b1c;
-    border: 1px solid #0c2b1c;
-    border-radius: 14px;
+    border: 1px solid #082015;
+    border-radius: 6px;
     color: #ffffff;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 14px;
+    min-height: 18px;
 }
 
 QPushButton#primaryBtn:hover {
-    background-color: #164e32;
+    background-color: #14482f;
+    border-color: #0e3722;
+}
+
+QPushButton#primaryBtn:pressed {
+    background-color: #082215;
+}
+
+QPushButton#primaryBtn:disabled {
+    background-color: #f1f5f3;
+    border: 1px solid #e2ebe5;
+    color: #94a3b8;
 }
 
 /* LineEdits and Inputs */
@@ -236,7 +339,7 @@ QStatusBar {
 /* GroupBoxes and Frames */
 QGroupBox {
     font-weight: 600;
-    border: 1px solid #e2e8f0;
+    border: 1px solid #e1e9e3;
     border-radius: 8px;
     margin-top: 10px;
     padding-top: 14px;
@@ -248,5 +351,138 @@ QGroupBox::title {
     subcontrol-position: top left;
     left: 12px;
     padding: 0 4px;
-    color: #334155;
+    color: #1e3a2b;
 }
+
+/* Right Finding Details Sidebar Surface */
+QWidget#findingDetailsPanel, FindingDetailsPanel {
+    background-color: #edf4ef;
+    border-left: 1px solid #ceded4;
+}
+
+QLabel#findingDetailsHeaderLabel {
+    font-size: 11px;
+    font-weight: 800;
+    color: #1a4d31;
+    letter-spacing: 0.8px;
+    padding: 10px 14px 6px 14px;
+    background: transparent;
+    border: none;
+}
+
+QFrame#findingDetailsDivider {
+    background-color: #d1e2d7;
+    max-height: 1px;
+    border: none;
+    margin: 0px 10px 4px 10px;
+}
+
+/* Polished Finding Cards */
+QFrame.detailCard {
+    background-color: #ffffff;
+    border: 1px solid #d4e3da;
+    border-radius: 8px;
+}
+
+QFrame.remediationCard {
+    background-color: #f0fdf4;
+    border: 1px solid #bce6cd;
+    border-radius: 8px;
+}
+
+QLabel.cardSectionTitle {
+    font-size: 10px;
+    font-weight: 700;
+    color: #47725b;
+    letter-spacing: 0.6px;
+    background: transparent;
+    border: none;
+}
+
+QLabel.cardTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: #092817;
+    background: transparent;
+    border: none;
+}
+
+QLabel.metaRowLabel {
+    padding: 3px 6px;
+    background-color: #f7faf8;
+    border: 1px solid #e3ede6;
+    border-radius: 4px;
+}
+
+QLabel.metaLabelVal {
+    color: #173324;
+    font-size: 11px;
+    font-weight: 500;
+    background: transparent;
+    border: none;
+    padding: 1px 0px;
+}
+
+QPushButton#btnHighlightOnPage {
+    background-color: #0c2b1c;
+    border: 1px solid #082015;
+    border-radius: 6px;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 700;
+    min-height: 36px;
+    padding: 0 16px;
+}
+
+QPushButton#btnHighlightOnPage:hover {
+    background-color: #14482f;
+    border-color: #0e3722;
+}
+
+QPushButton#btnHighlightOnPage:pressed {
+    background-color: #082215;
+}
+
+QPushButton#btnHighlightOnPage:disabled {
+    background-color: #e5ece7;
+    border: 1px solid #d1ded5;
+    color: #8fa597;
+}
+
+QPushButton#btnHighlightOnPage:focus {
+    outline: 2px solid #22c55e;
+}
+
+/* Splitter boundary line */
+QSplitter::handle:horizontal {
+    background-color: #ceded4;
+    width: 1px;
+}
+
+/* Finding Details Panel Scrollbar */
+QWidget#findingDetailsPanel QScrollBar:vertical {
+    background: #e2ede6;
+    width: 6px;
+    margin: 0px;
+    border-radius: 3px;
+}
+
+QWidget#findingDetailsPanel QScrollBar::handle:vertical {
+    background: #9abdb0;
+    min-height: 24px;
+    border-radius: 3px;
+}
+
+QWidget#findingDetailsPanel QScrollBar::handle:vertical:hover {
+    background: #6e9a83;
+}
+
+QWidget#findingDetailsPanel QScrollBar::add-line:vertical,
+QWidget#findingDetailsPanel QScrollBar::sub-line:vertical,
+QWidget#findingDetailsPanel QScrollBar::add-page:vertical,
+QWidget#findingDetailsPanel QScrollBar::sub-page:vertical {
+    background: none;
+    border: none;
+    height: 0px;
+}
+

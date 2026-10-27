@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
 
 from ...core.models import AuditReport, PDFDocumentModel, CheckResult, CheckStatus, Severity
+from ..widgets.status_badge import StatusColors
 from ..widgets.dashboard_charts import SegmentedProgressBar, SparklineChart, MiniBarChart
 
 
@@ -547,12 +548,8 @@ class DashboardView(QWidget):
 
             # Styled Status Pill
             item_status = QTableWidgetItem(f.status.value)
-            if f.status == CheckStatus.PASS:
-                item_status.setForeground(QColor("#15803d"))
-            elif f.status in (CheckStatus.FAIL, CheckStatus.ERROR):
-                item_status.setForeground(QColor("#b91c1c"))
-            elif f.status == CheckStatus.WARNING:
-                item_status.setForeground(QColor("#b45309"))
+            item_status.setTextAlignment(Qt.AlignCenter)
+            item_status.setForeground(StatusColors.get_status_color(f.status))
             item_status.setFont(QFont("Segoe UI", 9, QFont.Bold))
             self.table.setItem(row, 3, item_status)
 

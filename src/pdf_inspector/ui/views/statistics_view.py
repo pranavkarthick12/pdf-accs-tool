@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from ...core.models import AuditReport, PDFDocumentModel, CheckStatus
+from ..widgets.status_badge import StatusColors
 
 
 class StatCard(QFrame):
@@ -97,10 +98,10 @@ class StatisticsView(QWidget):
         self.metrics_grid = QGridLayout()
         self.metrics_grid.setSpacing(10)
 
-        self.card_passed = StatCard("Passed Checks", "0", "Standard satisfied", "#166534")
-        self.card_warned = StatCard("Warnings", "0", "Potential issues", "#b45309")
-        self.card_failed = StatCard("Failed Issues", "0", "Violations detected", "#dc2626")
-        self.card_manual = StatCard("Manual Review", "0", "Human audit required", "#0284c7")
+        self.card_passed = StatCard("Passed Checks", "0", "Standard satisfied", StatusColors.get_status_style(CheckStatus.PASS)["fg"])
+        self.card_warned = StatCard("Warnings", "0", "Potential issues", StatusColors.get_status_style(CheckStatus.WARNING)["fg"])
+        self.card_failed = StatCard("Failed Issues", "0", "Violations detected", StatusColors.get_status_style(CheckStatus.FAIL)["fg"])
+        self.card_manual = StatCard("Manual Review", "0", "Human audit required", StatusColors.get_status_style(CheckStatus.MANUAL_REVIEW)["fg"])
 
         self.metrics_grid.addWidget(self.card_passed, 0, 0)
         self.metrics_grid.addWidget(self.card_warned, 0, 1)

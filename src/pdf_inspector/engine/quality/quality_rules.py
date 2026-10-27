@@ -1671,21 +1671,27 @@ class ListItemStructureQualityRule(BaseRule):
         invalid_li = []
         valid_li = []
 
-        disallowed_direct_tags = {"P", "SPAN", "H1", "H2", "H3", "H4", "H5", "H6", "TABLE", "DIV", "SECT", "FIGURE"}
-
         for li in li_nodes:
-            if not li.children and not li.mcids:
-                invalid_li.append(li)
-                continue
+            immediate_children = [c for c in li.children if c is not None and isinstance(c, StructureNode)]
+            direct_lbl = [c for c in immediate_children if (c.standard_tag or c.tag or "").upper() == "LBL"]
+            direct_lbody = [c for c in immediate_children if (c.standard_tag or c.tag or "").upper() == "LBODY"]
+            other_direct = [c for c in immediate_children if (c.standard_tag or c.tag or "").upper() not in ("LBL", "LBODY")]
 
-            has_invalid_child = False
-            for child in li.children:
-                c_tag = (child.standard_tag or child.tag or "").upper()
-                if c_tag in disallowed_direct_tags:
-                    has_invalid_child = True
-                    break
+            is_invalid = False
+            # Duplicate Lbl or duplicate LBody
+            if len(direct_lbl) > 1 or len(direct_lbody) > 1:
+                is_invalid = True
+            # Inadmissible direct child (e.g. P, Span, Table, L, etc.)
+            elif other_direct:
+                is_invalid = True
+            # Empty LI
+            elif len(immediate_children) == 0 and not li.mcids:
+                is_invalid = True
+            # Raw content outside LBody
+            elif li.mcids and len(direct_lbody) == 0 and len(direct_lbl) == 0:
+                is_invalid = True
 
-            if has_invalid_child:
+            if is_invalid:
                 invalid_li.append(li)
             else:
                 valid_li.append(li)
@@ -1693,10 +1699,11 @@ class ListItemStructureQualityRule(BaseRule):
         results = []
         if invalid_li:
             for li in invalid_li[:5]:
+                li_path = li.get_structure_path() if hasattr(li, "get_structure_path") else f"LI id='{li.id}'"
                 results.append(self.create_result(
                     status=CheckStatus.FAIL,
-                    message=f"<LI> element on page {li.page or 1} has an invalid structure (must contain only <Lbl> and/or <LBody>).",
-                    evidence=f"Invalid LI <{li.tag} id='{li.id}'> on page {li.page or 1}",
+                    message=f"<LI> element on page {li.page or 1} has an invalid structure (must contain only at most one <Lbl> and/or at most one <LBody>).",
+                    evidence=f"Invalid LI <{li.tag} id='{li.id}'> at path '{li_path}' on page {li.page or 1}",
                     page=li.page or 1,
                     object_reference=f"<{li.tag} id='{li.id}'>",
                     custom_severity=Severity.HIGH,

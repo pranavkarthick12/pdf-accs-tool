@@ -10,8 +10,11 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QFileDialog, QProgressBar, QLabel
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 from ...core.document_parser import DocumentParser
+from ...core.models import CheckStatus
 from ...engine.runner import AuditRunner
+from ..widgets.status_badge import StatusColors
 
 
 class BatchScanView(QWidget):
@@ -101,11 +104,34 @@ class BatchScanView(QWidget):
                 })
 
                 self.table.setItem(idx, 0, QTableWidgetItem(filename))
-                self.table.setItem(idx, 1, QTableWidgetItem(f"{report.compliance_score}%"))
-                self.table.setItem(idx, 2, QTableWidgetItem("Yes" if doc.is_tagged else "No"))
-                self.table.setItem(idx, 3, QTableWidgetItem(str(report.total_passed)))
-                self.table.setItem(idx, 4, QTableWidgetItem(str(report.total_warned)))
-                self.table.setItem(idx, 5, QTableWidgetItem(str(report.total_failed)))
+                
+                item_score = QTableWidgetItem(f"{report.compliance_score}%")
+                item_score.setTextAlignment(Qt.AlignCenter)
+                item_score.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                self.table.setItem(idx, 1, item_score)
+
+                item_tagged = QTableWidgetItem("Yes" if doc.is_tagged else "No")
+                item_tagged.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(idx, 2, item_tagged)
+
+                item_p = QTableWidgetItem(str(report.total_passed))
+                item_p.setTextAlignment(Qt.AlignCenter)
+                item_p.setForeground(StatusColors.get_status_color(CheckStatus.PASS))
+                item_p.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                self.table.setItem(idx, 3, item_p)
+
+                item_w = QTableWidgetItem(str(report.total_warned))
+                item_w.setTextAlignment(Qt.AlignCenter)
+                item_w.setForeground(StatusColors.get_status_color(CheckStatus.WARNING))
+                item_w.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                self.table.setItem(idx, 4, item_w)
+
+                item_f = QTableWidgetItem(str(report.total_failed))
+                item_f.setTextAlignment(Qt.AlignCenter)
+                item_f.setForeground(StatusColors.get_status_color(CheckStatus.FAIL))
+                item_f.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                self.table.setItem(idx, 5, item_f)
+
                 self.table.item(idx, 0).setData(Qt.UserRole, pdf_path)
             except Exception as e:
                 res_item.update({"status": f"Error: {e}", "score": 0.0, "is_tagged": False, "passed": 0, "warned": 0, "failed": 0})

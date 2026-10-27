@@ -139,6 +139,30 @@ class StructureNode:
     decoding_error_msg: str = ""
     parent: Optional['StructureNode'] = field(default=None, repr=False)
 
+    def __post_init__(self):
+        for child in self.children:
+            if isinstance(child, StructureNode):
+                child.parent = self
+
+    def add_child(self, child: 'StructureNode'):
+        """Appends a child node and links parent pointer."""
+        if child is not None and isinstance(child, StructureNode):
+            child.parent = self
+            self.children.append(child)
+
+    def get_structure_path(self) -> str:
+        """Returns the hierarchical tag path from the root down to this node (e.g. 'Document/Sect/L/LI')."""
+        curr: Optional['StructureNode'] = self
+        parts: List[str] = []
+        while curr:
+            tag_name = curr.tag or curr.standard_tag or "Unknown"
+            if tag_name != "StructTreeRoot":
+                parts.append(tag_name)
+            curr = curr.parent
+        if not parts:
+            return "/"
+        return "/".join(reversed(parts))
+
     def is_in_formula(self) -> bool:
         """Returns True if this node or any ancestor is a Formula or Math element."""
         curr = self
@@ -183,7 +207,7 @@ class StructureNode:
         if recursive and self.children:
             for child in self.children:
                 # Do not aggregate text from independent major structures into a parent block
-                if child.standard_tag.upper() not in ("FIGURE", "FORMULA", "TABLE", "NOTE"):
+                if isinstance(child, StructureNode) and child.standard_tag.upper() not in ("FIGURE", "FORMULA", "TABLE", "NOTE"):
                     c_txt = child.get_readable_text(recursive=True)
                     if c_txt and c_txt not in parts:
                         parts.append(c_txt)
@@ -203,16 +227,18 @@ class StructureNode:
 
     def find_all_by_standard_tag(self, target_tag: str) -> List['StructureNode']:
         results = []
-        if self.standard_tag.upper() == target_tag.upper():
+        if (self.standard_tag or self.tag or "").upper() == target_tag.upper():
             results.append(self)
         for child in self.children:
-            results.extend(child.find_all_by_standard_tag(target_tag))
+            if isinstance(child, StructureNode):
+                results.extend(child.find_all_by_standard_tag(target_tag))
         return results
 
     def find_all_nodes(self) -> List['StructureNode']:
         all_nodes = [self]
         for child in self.children:
-            all_nodes.extend(child.find_all_nodes())
+            if isinstance(child, StructureNode):
+                all_nodes.extend(child.find_all_nodes())
         return all_nodes
 
 

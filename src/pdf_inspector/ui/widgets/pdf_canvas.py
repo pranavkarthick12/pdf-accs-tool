@@ -14,9 +14,10 @@ from PySide6.QtWidgets import (
     QStackedWidget, QButtonGroup
 )
 from PySide6.QtCore import Qt, Signal, QRectF
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QBrush, QIntValidator
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QBrush, QFont, QIntValidator
 
 from ...core.models import CheckResult, CheckStatus
+from ...core.visual_locator import VisualLocatorResolver, ResolvedLocation
 from .pac_visual_locator import PACVisualLocatorWidget
 
 
@@ -27,21 +28,29 @@ class PageDisplayWidget(QLabel):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
         self.current_pixmap: Optional[QPixmap] = None
-        self.active_bbox: Optional[Tuple[float, float, float, float]] = None  # (x0, y0, x1, y1) in PDF pts
-        self.page_size: Tuple[float, float] = (0.0, 0.0)  # (width, height) in PDF points
+        self.highlight_rects: List[Tuple[float, float, float, float]] = []
+        self.active_bbox: Optional[Tuple[float, float, float, float]] = None
+        self.page_rect: pymupdf.Rect = pymupdf.Rect(0, 0, 612, 792)
         self.scale_factor: float = 1.0
+        self.rotation: int = 0
+        self.status_message: Optional[str] = None
 
     def set_page_image(
         self,
         pixmap: QPixmap,
-        page_size: Tuple[float, float],
+        page_rect: pymupdf.Rect,
         scale: float,
-        highlight_bbox: Optional[Tuple[float, float, float, float]] = None
+        rotation: int = 0,
+        highlight_rects: Optional[List[Tuple[float, float, float, float]]] = None,
+        status_message: Optional[str] = None
     ):
         self.current_pixmap = pixmap
-        self.page_size = page_size
+        self.page_rect = page_rect
         self.scale_factor = scale
-        self.active_bbox = highlight_bbox
+        self.rotation = rotation
+        self.highlight_rects = highlight_rects or []
+        self.active_bbox = self.highlight_rects[0] if self.highlight_rects else None
+        self.status_message = status_message
         self.update()
 
     def paintEvent(self, event):
@@ -57,40 +66,77 @@ class PageDisplayWidget(QLabel):
         px_y = (self.height() - self.current_pixmap.height()) // 2
         painter.drawPixmap(px_x, px_y, self.current_pixmap)
 
-        # Draw highlight overlay if bbox is provided
-        if self.active_bbox and self.scale_factor > 0:
-            x0, y0, x1, y1 = self.active_bbox
-            sx0 = px_x + (x0 * self.scale_factor)
-            sy0 = px_y + (y0 * self.scale_factor)
-            sw = max(10, (x1 - x0) * self.scale_factor)
-            sh = max(10, (y1 - y0) * self.scale_factor)
+        # Mathematical coordinate transformation from PyMuPDF page.rect to rendered pixmap pixel space
+        mat = pymupdf.Matrix(self.scale_factor, self.scale_factor).prerotate(self.rotation)
+        bounds = self.page_rect * mat
 
-            rect = QRectF(sx0, sy0, sw, sh)
+        # Draw highlight overlays if rectangles are provided
+        if self.highlight_rects and self.scale_factor > 0:
+            for b in self.highlight_rects:
+                x0, y0, x1, y1 = b
+                r_cand = pymupdf.Rect(x0, y0, x1, y1)
+                tr = r_cand * mat
+                pix_r = pymupdf.Rect(
+                    tr.x0 - bounds.x0,
+                    tr.y0 - bounds.y0,
+                    tr.x1 - bounds.x0,
+                    tr.y1 - bounds.y0
+                )
 
-            # Draw glowing highlight fill and border
-            fill_color = QColor(239, 68, 68, 55)  # Red translucent
-            border_color = QColor(220, 38, 38, 220)  # Solid red
+                sx0 = px_x + pix_r.x0
+                sy0 = px_y + pix_r.y0
+                sw = max(8.0, pix_r.width)
+                sh = max(8.0, pix_r.height)
 
-            painter.setBrush(QBrush(fill_color))
-            painter.setPen(QPen(border_color, 2.5, Qt.SolidLine))
-            painter.drawRoundedRect(rect, 4, 4)
+                rect = QRectF(sx0, sy0, sw, sh)
 
-            # Corner pins
-            pin_pen = QPen(QColor(185, 28, 28), 3)
-            painter.setPen(pin_pen)
-            pin_len = min(12.0, sw / 3, sh / 3)
-            # Top-left
-            painter.drawLine(sx0, sy0, sx0 + pin_len, sy0)
-            painter.drawLine(sx0, sy0, sx0, sy0 + pin_len)
-            # Top-right
-            painter.drawLine(sx0 + sw, sy0, sx0 + sw - pin_len, sy0)
-            painter.drawLine(sx0 + sw, sy0, sx0 + sw, sy0 + pin_len)
-            # Bottom-left
-            painter.drawLine(sx0, sy0 + sh, sx0 + pin_len, sy0 + sh)
-            painter.drawLine(sx0, sy0 + sh, sx0, sy0 + sh - pin_len)
-            # Bottom-right
-            painter.drawLine(sx0 + sw, sy0 + sh, sx0 + sw - pin_len, sy0 + sh)
-            painter.drawLine(sx0 + sw, sy0 + sh, sx0 + sw, sy0 + sh - pin_len)
+                # Draw glowing highlight fill and border
+                fill_color = QColor(239, 68, 68, 55)  # Red translucent
+                border_color = QColor(220, 38, 38, 220)  # Solid red
+
+                painter.setBrush(QBrush(fill_color))
+                painter.setPen(QPen(border_color, 2.5, Qt.SolidLine))
+                painter.drawRoundedRect(rect, 4, 4)
+
+                # Corner pins
+                pin_pen = QPen(QColor(185, 28, 28), 3)
+                painter.setPen(pin_pen)
+                pin_len = min(12.0, sw / 3, sh / 3)
+                # Top-left
+                painter.drawLine(sx0, sy0, sx0 + pin_len, sy0)
+                painter.drawLine(sx0, sy0, sx0, sy0 + pin_len)
+                # Top-right
+                painter.drawLine(sx0 + sw, sy0, sx0 + sw - pin_len, sy0)
+                painter.drawLine(sx0 + sw, sy0, sx0 + sw, sy0 + pin_len)
+                # Bottom-left
+                painter.drawLine(sx0, sy0 + sh, sx0 + pin_len, sy0 + sh)
+                painter.drawLine(sx0, sy0 + sh, sx0, sy0 + sh - pin_len)
+                # Bottom-right
+                painter.drawLine(sx0 + sw, sy0 + sh, sx0 + sw - pin_len, sy0 + sh)
+                painter.drawLine(sx0 + sw, sy0 + sh, sx0 + sw, sy0 + sh - pin_len)
+
+        # Status badge if document-level or non-spatial finding
+        elif self.status_message:
+            badge_w = min(460, max(240, self.current_pixmap.width() - 40))
+            badge_rect = QRectF(px_x + 20, px_y + 20, badge_w, 46)
+            painter.setBrush(QBrush(QColor(241, 245, 249, 240)))
+            painter.setPen(QPen(QColor(148, 163, 184), 1.2))
+            painter.drawRoundedRect(badge_rect, 6, 6)
+
+            painter.setPen(QColor(30, 41, 59))
+            painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            painter.drawText(
+                QRectF(badge_rect.left() + 12, badge_rect.top() + 6, badge_rect.width() - 24, 18),
+                Qt.AlignLeft,
+                "ℹ Document-Level / Non-Spatial Finding"
+            )
+            painter.setFont(QFont("Segoe UI", 8))
+            painter.setPen(QColor(71, 85, 105))
+            painter.drawText(
+                QRectF(badge_rect.left() + 12, badge_rect.top() + 24, badge_rect.width() - 24, 18),
+                Qt.AlignLeft,
+                self.status_message[:70]
+            )
 
         painter.end()
 
@@ -110,10 +156,11 @@ class PDFCanvas(QWidget):
         self.zoom: float = 1.25
         self.rotation: int = 0
         self.highlight_bbox: Optional[Tuple[float, float, float, float]] = None
+        self.highlight_rects: List[Tuple[float, float, float, float]] = []
+        self.highlight_message: Optional[str] = None
         self.current_finding: Optional[CheckResult] = None
 
         self._init_ui()
-
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -275,7 +322,8 @@ class PDFCanvas(QWidget):
                     self.current_finding,
                     page_num=self.current_page_idx + 1,
                     bbox=self.highlight_bbox,
-                    doc_model=self.doc_model
+                    doc_model=self.doc_model,
+                    rects=self.highlight_rects
                 )
             elif self.doc:
                 dummy_finding = CheckResult(
@@ -289,7 +337,14 @@ class PDFCanvas(QWidget):
                     page=self.current_page_idx + 1,
                     bounding_box=self.highlight_bbox
                 )
-                self.pac_locator.load_finding(self.doc, dummy_finding, self.current_page_idx + 1, self.highlight_bbox, doc_model=self.doc_model)
+                self.pac_locator.load_finding(
+                    self.doc,
+                    dummy_finding,
+                    page_num=self.current_page_idx + 1,
+                    bbox=self.highlight_bbox,
+                    doc_model=self.doc_model,
+                    rects=self.highlight_rects
+                )
         else:
             self.btn_mode_doc.setChecked(True)
             self.stack.setCurrentIndex(1)
@@ -334,6 +389,9 @@ class PDFCanvas(QWidget):
         self.current_page_idx = 0
         self.rotation = 0
         self.highlight_bbox = None
+        self.highlight_rects = []
+        self.highlight_message = None
+        self.current_finding = None
         self._update_nav_toolbar()
         self.render_current_page()
 
@@ -351,12 +409,13 @@ class PDFCanvas(QWidget):
         qimg = QImage(pix.samples, pix.width, pix.height, pix.stride, img_format)
         pixmap = QPixmap.fromImage(qimg)
 
-        rect = page.rect
         self.page_display.set_page_image(
             pixmap=pixmap,
-            page_size=(rect.width, rect.height),
+            page_rect=page.rect,
             scale=self.zoom,
-            highlight_bbox=self.highlight_bbox
+            rotation=self.rotation,
+            highlight_rects=self.highlight_rects,
+            status_message=self.highlight_message
         )
 
         self._update_nav_toolbar()
@@ -373,7 +432,6 @@ class PDFCanvas(QWidget):
             target_idx = min(len(self.doc) - 1, target_idx)
 
         self.current_page_idx = target_idx
-        self.highlight_bbox = bbox
         if finding is not None:
             self.current_finding = finding
 
@@ -383,18 +441,51 @@ class PDFCanvas(QWidget):
         # Synchronize toolbar navigation controls immediately
         self._update_nav_toolbar()
 
+        # Set default/initial highlight state before checking doc (supports headless/mock testing)
+        if bbox and len(bbox) == 4:
+            self.highlight_bbox = bbox
+            self.highlight_rects = [bbox]
+            self.highlight_message = None
+        elif finding is not None and finding.bounding_box and len(finding.bounding_box) == 4:
+            self.highlight_bbox = finding.bounding_box
+            self.highlight_rects = [finding.bounding_box]
+            self.highlight_message = None
+        else:
+            self.highlight_bbox = None
+            self.highlight_rects = []
+            self.highlight_message = None
+
         if not self.doc or len(self.doc) == 0:
             return
 
-        # When a finding is targeted, activate PAC visual locator view
+        # Central location resolution conforming to data contract
+        if finding is not None:
+            if bbox and len(bbox) == 4:
+                self.highlight_bbox = bbox
+                self.highlight_rects = [bbox]
+                self.highlight_message = None
+            else:
+                resolved = VisualLocatorResolver.resolve_location(
+                    self.doc, target_idx + 1, finding, self.doc_model
+                )
+                self.highlight_rects = resolved.rectangles
+                self.highlight_bbox = resolved.primary_bbox
+                self.highlight_message = resolved.message if not resolved.is_valid else None
+        elif bbox and len(bbox) == 4:
+            self.highlight_bbox = bbox
+            self.highlight_rects = [bbox]
+            self.highlight_message = None
+
+        # Display in active view mode
         if finding:
             self.set_view_mode("pac")
             self.pac_locator.load_finding(
                 self.doc,
                 finding,
                 page_num=target_idx + 1,
-                bbox=bbox,
-                doc_model=self.doc_model
+                bbox=self.highlight_bbox,
+                doc_model=self.doc_model,
+                rects=self.highlight_rects
             )
         else:
             if self.stack.currentIndex() == 0:
@@ -405,7 +496,8 @@ class PDFCanvas(QWidget):
                         self.current_finding,
                         page_num=target_idx + 1,
                         bbox=self.highlight_bbox,
-                        doc_model=self.doc_model
+                        doc_model=self.doc_model,
+                        rects=self.highlight_rects
                     )
                 else:
                     dummy_finding = CheckResult(
@@ -417,21 +509,27 @@ class PDFCanvas(QWidget):
                         severity="INFO",
                         message=f"Page {target_idx + 1} of {len(self.doc)}",
                         page=target_idx + 1,
-                        bounding_box=bbox
+                        bounding_box=self.highlight_bbox
                     )
                     self.pac_locator.load_finding(
                         self.doc,
                         dummy_finding,
                         page_num=target_idx + 1,
-                        bbox=bbox,
-                        doc_model=self.doc_model
+                        bbox=self.highlight_bbox,
+                        doc_model=self.doc_model,
+                        rects=self.highlight_rects
                     )
             else:
                 self.render_current_page()
 
         # Scroll to highlighted element if in document view
-        if bbox and self.stack.currentIndex() == 1:
-            y_center = int(((bbox[1] + bbox[3]) / 2) * self.zoom)
+        if self.highlight_rects and self.stack.currentIndex() == 1:
+            page = self.doc[self.current_page_idx]
+            mat = pymupdf.Matrix(self.zoom, self.zoom).prerotate(self.rotation)
+            bounds = page.rect * mat
+            tr = pymupdf.Rect(self.highlight_rects[0]) * mat
+            pix_r = pymupdf.Rect(tr.x0 - bounds.x0, tr.y0 - bounds.y0, tr.x1 - bounds.x0, tr.y1 - bounds.y0)
+            y_center = int((pix_r.y0 + pix_r.y1) / 2)
             self.scroll_area.verticalScrollBar().setValue(max(0, y_center - 150))
 
     def show_finding_visual_locator(self, finding: CheckResult, doc_model: Optional[Any] = None):
@@ -552,6 +650,8 @@ class PDFCanvas(QWidget):
 
     def clear_highlight(self):
         self.highlight_bbox = None
+        self.highlight_rects = []
+        self.highlight_message = None
         self.current_finding = None
         self.render_current_page()
 
@@ -562,4 +662,4 @@ class PDFCanvas(QWidget):
             except Exception:
                 pass
             self.doc = None
-        self.page_display.set_page_image(QPixmap(), (0, 0), 1.0, None)
+        self.page_display.set_page_image(QPixmap(), pymupdf.Rect(0, 0, 100, 100), 1.0, 0, None)

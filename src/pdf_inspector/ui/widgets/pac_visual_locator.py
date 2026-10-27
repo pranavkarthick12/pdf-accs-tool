@@ -20,7 +20,8 @@ from PySide6.QtGui import (
 )
 
 from ...core.models import CheckResult, CheckStatus, Severity, PDFDocumentModel
-from ...core.visual_locator import VisualLocatorResolver
+from ...core.visual_locator import VisualLocatorResolver, ResolvedLocation
+from .status_badge import StatusColors
 
 
 class PACVisualCanvas(QWidget):
@@ -35,14 +36,15 @@ class PACVisualCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Small minimum size so canvas dynamically fits without overflowing or clipping
         self.setMinimumSize(180, 80)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.doc: Optional[pymupdf.Document] = None
         self.doc_model: Optional[PDFDocumentModel] = None
         self.page_num: int = 1  # 1-indexed
-        self.bbox: Optional[Tuple[float, float, float, float]] = None  # (x0, y0, x1, y1) in PDF pts (top-left origin)
+        self.bbox: Optional[Tuple[float, float, float, float]] = None  # Primary envelope
+        self.bboxes: List[Tuple[float, float, float, float]] = []  # All valid highlight rects
+        self.resolved_location: Optional[ResolvedLocation] = None
         self.finding: Optional[CheckResult] = None
 
         # Cached renders
@@ -68,10 +70,11 @@ class PACVisualCanvas(QWidget):
         self,
         doc: Optional[pymupdf.Document],
         page_num: int,
-        bbox: Optional[Tuple[float, float, float, float]],
+        bbox: Optional[Tuple[float, float, float, float]] = None,
         finding: Optional[CheckResult] = None,
         doc_model: Optional[PDFDocumentModel] = None,
-        zoom: float = 1.0
+        zoom: float = 1.0,
+        rects: Optional[List[Tuple[float, float, float, float]]] = None
     ):
         """Sets the document and finding details, then prepares high-res renders."""
         self.doc = doc
@@ -82,11 +85,20 @@ class PACVisualCanvas(QWidget):
         self._pan_x = 0.0
         self._pan_y = 0.0
 
-        # Pinpoint precise bounding box using explicit bbox or VisualLocatorResolver
-        if bbox and len(bbox) == 4:
+        if rects:
+            self.bboxes = [r for r in rects if len(r) == 4]
+            self.bbox = bbox or (self.bboxes[0] if self.bboxes else None)
+            self.resolved_location = None
+        elif bbox and len(bbox) == 4:
             self.bbox = bbox
+            self.bboxes = [bbox]
+            self.resolved_location = None
         else:
-            self.bbox = VisualLocatorResolver.resolve_bbox(self.doc, self.page_num, self.finding, self.doc_model)
+            resolved = VisualLocatorResolver.resolve_location(self.doc, self.page_num, self.finding, self.doc_model)
+            self.resolved_location = resolved
+            self.bboxes = resolved.rectangles
+            self.bbox = resolved.primary_bbox
+
         self._render_elements()
         self.update()
         self.zoom_changed.emit(self._zoom_level)
@@ -116,7 +128,7 @@ class PACVisualCanvas(QWidget):
 
         page = self.doc[self.page_num - 1]
         p_rect = page.rect
-        self._cached_page_size = (p_rect.width, p_rect.height)
+        self._cached_page_size = (float(p_rect.width), float(p_rect.height))
 
         # 1. Page Overview Pixmap (rendered at 1.5x for crisp thumbnail display)
         try:
@@ -128,25 +140,33 @@ class PACVisualCanvas(QWidget):
             self._cached_page_pixmap = None
 
         # 2. Magnified Callout Crop
-        try:
-            bx0, by0, bx1, by1 = self.bbox or (0, 0, p_rect.width, 100)
-            margin = self._context_margin
+        if self.bboxes:
+            try:
+                min_bx0 = min(b[0] for b in self.bboxes)
+                min_by0 = min(b[1] for b in self.bboxes)
+                max_bx1 = max(b[2] for b in self.bboxes)
+                max_by1 = max(b[3] for b in self.bboxes)
 
-            crop_x0 = max(0.0, bx0 - margin)
-            crop_y0 = max(0.0, by0 - (margin * 0.7))
-            crop_x1 = min(p_rect.width, bx1 + margin)
-            crop_y1 = min(p_rect.height, by1 + (margin * 0.7))
+                margin = self._context_margin
 
-            crop_rect = pymupdf.Rect(crop_x0, crop_y0, crop_x1, crop_y1)
-            render_scale = max(2.5, min(5.0, 2.5 * max(1.0, self._zoom_level)))
-            crop_mat = pymupdf.Matrix(render_scale, render_scale)
+                crop_x0 = max(float(p_rect.x0), min_bx0 - margin)
+                crop_y0 = max(float(p_rect.y0), min_by0 - (margin * 0.7))
+                crop_x1 = min(float(p_rect.x1), max_bx1 + margin)
+                crop_y1 = min(float(p_rect.y1), max_by1 + (margin * 0.7))
 
-            # High-res crop render
-            crop_pix = page.get_pixmap(matrix=crop_mat, clip=crop_rect, alpha=False)
-            qimg_crop = QImage(crop_pix.samples, crop_pix.width, crop_pix.height, crop_pix.stride, QImage.Format_RGB888)
-            self._cached_crop_pixmap = QPixmap.fromImage(qimg_crop)
-            self._cached_crop_rect = (crop_x0, crop_y0, crop_x1, crop_y1)
-        except Exception:
+                crop_rect = pymupdf.Rect(crop_x0, crop_y0, crop_x1, crop_y1)
+                render_scale = max(2.5, min(5.0, 2.5 * max(1.0, self._zoom_level)))
+                crop_mat = pymupdf.Matrix(render_scale, render_scale)
+
+                # High-res crop render
+                crop_pix = page.get_pixmap(matrix=crop_mat, clip=crop_rect, alpha=False)
+                qimg_crop = QImage(crop_pix.samples, crop_pix.width, crop_pix.height, crop_pix.stride, QImage.Format_RGB888)
+                self._cached_crop_pixmap = QPixmap.fromImage(qimg_crop)
+                self._cached_crop_rect = (crop_x0, crop_y0, crop_x1, crop_y1)
+            except Exception:
+                self._cached_crop_pixmap = None
+                self._cached_crop_rect = None
+        else:
             self._cached_crop_pixmap = None
             self._cached_crop_rect = None
 
@@ -198,28 +218,26 @@ class PACVisualCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
 
-        # Canvas background
         w = self.width()
         h = self.height()
         painter.fillRect(0, 0, w, h, QColor("#f1f5f9"))
 
-        if not self._cached_page_pixmap or not self.bbox:
+        if not self._cached_page_pixmap:
             painter.setPen(QColor("#94a3b8"))
             painter.setFont(QFont("Segoe UI", 12))
             painter.drawText(self.rect(), Qt.AlignCenter, "No page preview available.")
             painter.end()
             return
 
-        # Split geometry
         left_width = int(w * self._split_ratio)
         pad = 12
 
         # -------------------------------------------------------------
-        # 1. LEFT PANEL: Full Page Overview (fits completely, never clipped)
+        # 1. LEFT PANEL: Full Page Overview
         # -------------------------------------------------------------
         page_w, page_h = self._cached_page_size
         avail_pw = max(40, left_width - (pad * 2))
-        avail_ph = max(40, h - (pad * 2) - 22)  # 22px reserved for "Page X" label below
+        avail_ph = max(40, h - (pad * 2) - 22)
 
         scale_ov = min(avail_pw / page_w, avail_ph / page_h)
         disp_pw = page_w * scale_ov
@@ -245,18 +263,29 @@ class PACVisualCanvas(QWidget):
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(page_rect)
 
-        # Bounding box on Left Page
-        bx0, by0, bx1, by1 = self.bbox
-        ov_bx0 = ov_x + (bx0 * scale_ov)
-        ov_by0 = ov_y + (by0 * scale_ov)
-        ov_bw = max(4.0, (bx1 - bx0) * scale_ov)
-        ov_bh = max(4.0, (by1 - by0) * scale_ov)
-        ov_bbox_rect = QRectF(ov_bx0, ov_by0, ov_bw, ov_bh)
+        # Draw highlight rects on Left Page
+        p_x0 = 0.0
+        p_y0 = 0.0
+        if self.doc and len(self.doc) >= self.page_num:
+            pr = self.doc[self.page_num - 1].rect
+            p_x0 = float(pr.x0)
+            p_y0 = float(pr.y0)
 
-        # Highlight fill and stroke on full page
-        painter.setBrush(QBrush(QColor(34, 197, 94, 45)))  # Subtle green glow
-        painter.setPen(QPen(QColor("#16a34a"), 1.8, Qt.SolidLine))
-        painter.drawRoundedRect(ov_bbox_rect, 2, 2)
+        ov_rects = []
+        if self.bboxes:
+            for b in self.bboxes:
+                bx0, by0, bx1, by1 = b
+                ov_bx0 = ov_x + ((bx0 - p_x0) * scale_ov)
+                ov_by0 = ov_y + ((by0 - p_y0) * scale_ov)
+                ov_bw = max(4.0, (bx1 - bx0) * scale_ov)
+                ov_bh = max(4.0, (by1 - by0) * scale_ov)
+                ov_rect = QRectF(ov_bx0, ov_by0, ov_bw, ov_bh)
+                ov_rects.append(ov_rect)
+
+                # Highlight fill and stroke on full page
+                painter.setBrush(QBrush(QColor(34, 197, 94, 45)))
+                painter.setPen(QPen(QColor("#16a34a"), 1.8, Qt.SolidLine))
+                painter.drawRoundedRect(ov_rect, 2, 2)
 
         # "Page X" Caption below the page
         painter.setPen(QColor("#334155"))
@@ -269,33 +298,72 @@ class PACVisualCanvas(QWidget):
         )
 
         # -------------------------------------------------------------
-        # 2. RIGHT PANEL: Magnified Callout Crop
+        # 2. RIGHT PANEL: Magnified Callout Crop OR Honest Non-Spatial Card
         # -------------------------------------------------------------
         rx_start = left_width + pad
         avail_rw = max(40, w - rx_start - pad)
         avail_rh = max(40, h - (pad * 2))
 
-        crop_x0, crop_y0, crop_x1, crop_y1 = self._cached_crop_rect or (bx0, by0, bx1, by1)
+        container_rect = QRectF(rx_start, pad, avail_rw, avail_rh)
+        painter.fillRect(QRectF(rx_start + 3, pad + 3, avail_rw, avail_rh), QColor(0, 0, 0, 30))
+        painter.fillRect(container_rect, QColor("#ffffff"))
+
+        if not self.bboxes:
+            # Honest, transparent non-spatial message card
+            painter.setPen(QColor("#0f172a"))
+            painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
+
+            is_doc = self.resolved_location and self.resolved_location.location_type == "DOCUMENT"
+            header_text = "📌 Document-Level Finding" if is_doc else "ℹ No Precise Visual Location"
+            painter.drawText(QRectF(rx_start + 24, pad + 24, avail_rw - 48, 28), Qt.AlignLeft, header_text)
+
+            painter.setPen(QColor("#475569"))
+            painter.setFont(QFont("Segoe UI", 10))
+
+            finding_name = self.finding.name if self.finding else "Accessibility Finding"
+            rule_id = self.finding.check_id if self.finding else ""
+            msg = self.finding.message if self.finding else "This finding evaluates document properties."
+            evidence = self.finding.evidence if self.finding and self.finding.evidence else ""
+
+            details_text = (
+                f"Rule: {rule_id} — {finding_name}\n\n"
+                f"Issue Details:\n{msg}\n\n"
+            )
+            if evidence:
+                details_text += f"Technical Evidence:\n{evidence}\n\n"
+            details_text += (
+                "Note: This finding evaluates document-wide properties, metadata, or font encoding "
+                "and does not have a single visual bounding box on this page."
+            )
+
+            painter.drawText(
+                QRectF(rx_start + 24, pad + 60, avail_rw - 48, avail_rh - 84),
+                Qt.AlignLeft | Qt.TextWordWrap,
+                details_text
+            )
+
+            # Container border
+            painter.setPen(QPen(QColor("#cbd5e1"), 1.2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(container_rect)
+            painter.end()
+            return
+
+        # -------------------------------------------------------------
+        # 3. RIGHT PANEL WITH CROP: Magnified Callout with Red BBoxes
+        # -------------------------------------------------------------
+        crop_x0, crop_y0, crop_x1, crop_y1 = self._cached_crop_rect or (0, 0, page_w, page_h)
         crop_w = max(1.0, crop_x1 - crop_x0)
         crop_h = max(1.0, crop_y1 - crop_y0)
 
-        # Base scale that fits perfectly inside avail_rw x avail_rh
         base_fit_scale = min(avail_rw / crop_w, avail_rh / crop_h)
         effective_scale = base_fit_scale * self._zoom_level
 
         disp_cw = crop_w * effective_scale
         disp_ch = crop_h * effective_scale
 
-        # Container viewport rect for right panel
-        container_rect = QRectF(rx_start, pad, avail_rw, avail_rh)
-
-        # Container drop shadow & background
-        painter.fillRect(QRectF(rx_start + 3, pad + 3, avail_rw, avail_rh), QColor(0, 0, 0, 30))
-        painter.fillRect(container_rect, QColor("#ffffff"))
-
-        # Target BBox center in crop coordinates
-        target_crop_cx = ((bx0 + bx1) / 2.0 - crop_x0) * effective_scale
-        target_crop_cy = ((by0 + by1) / 2.0 - crop_y0) * effective_scale
+        target_crop_cx = ((crop_x0 + crop_x1) / 2.0 - crop_x0) * effective_scale
+        target_crop_cy = ((crop_y0 + crop_y1) / 2.0 - crop_y0) * effective_scale
 
         container_cx = rx_start + avail_rw / 2.0
         container_cy = pad + avail_rh / 2.0
@@ -307,7 +375,6 @@ class PACVisualCanvas(QWidget):
             cx = container_cx - target_crop_cx + self._pan_x
             cy = container_cy - target_crop_cy + self._pan_y
 
-        # Draw cropped pixmap and red bbox inside clipped container
         painter.save()
         painter.setClipRect(container_rect)
 
@@ -317,17 +384,20 @@ class PACVisualCanvas(QWidget):
                 self._cached_crop_pixmap
             )
 
-        # Target Bounding Box inside Magnified Crop
-        mag_bx0 = cx + ((bx0 - crop_x0) * effective_scale)
-        mag_by0 = cy + ((by0 - crop_y0) * effective_scale)
-        mag_bw = max(6.0, (bx1 - bx0) * effective_scale)
-        mag_bh = max(6.0, (by1 - by0) * effective_scale)
-        mag_bbox_rect = QRectF(mag_bx0, mag_by0, mag_bw, mag_bh)
+        # Draw red bounding boxes for EACH rectangle in self.bboxes
+        mag_rects = []
+        for b in self.bboxes:
+            bx0, by0, bx1, by1 = b
+            mag_bx0 = cx + ((bx0 - crop_x0) * effective_scale)
+            mag_by0 = cy + ((by0 - crop_y0) * effective_scale)
+            mag_bw = max(6.0, (bx1 - bx0) * effective_scale)
+            mag_bh = max(6.0, (by1 - by0) * effective_scale)
+            mag_bbox_rect = QRectF(mag_bx0, mag_by0, mag_bw, mag_bh)
+            mag_rects.append(mag_bbox_rect)
 
-        # Prominent Red Bounding Box framing the element (matching PAC reference)
-        painter.setBrush(QBrush(QColor(239, 68, 68, 25)))  # Very soft red translucent
-        painter.setPen(QPen(QColor("#dc2626"), 2.2, Qt.SolidLine))
-        painter.drawRoundedRect(mag_bbox_rect, 3, 3)
+            painter.setBrush(QBrush(QColor(239, 68, 68, 30)))
+            painter.setPen(QPen(QColor("#dc2626"), 2.2, Qt.SolidLine))
+            painter.drawRoundedRect(mag_bbox_rect, 3, 3)
 
         painter.restore()
 
@@ -337,28 +407,38 @@ class PACVisualCanvas(QWidget):
         painter.drawRect(container_rect)
 
         # -------------------------------------------------------------
-        # 3. MIDDLE: Green Projection / Callout Connecting Lines
+        # 4. MIDDLE: Green Projection Lines
         # -------------------------------------------------------------
-        proj_pen = QPen(QColor(22, 163, 74, 210), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        painter.setPen(proj_pen)
+        if ov_rects and mag_rects:
+            proj_pen = QPen(QColor(22, 163, 74, 210), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(proj_pen)
 
-        # Connect left page highlight corners to right magnified box corners
-        # Clamp right points to container_rect so projection lines cleanly meet container
-        def clamp_pt(px, py):
-            return QPointF(
-                max(container_rect.left(), min(container_rect.right(), px)),
-                max(container_rect.top(), min(container_rect.bottom(), py))
-            )
+            # Union envelope of left rects and right rects
+            min_ov_x = min(r.left() for r in ov_rects)
+            min_ov_y = min(r.top() for r in ov_rects)
+            max_ov_x = max(r.right() for r in ov_rects)
+            max_ov_y = max(r.bottom() for r in ov_rects)
 
-        p_tl = clamp_pt(mag_bx0, mag_by0)
-        p_bl = clamp_pt(mag_bx0, mag_by0 + mag_bh)
-        p_tr = clamp_pt(mag_bx0 + mag_bw, mag_by0)
-        p_br = clamp_pt(mag_bx0 + mag_bw, mag_by0 + mag_bh)
+            min_mag_x = min(r.left() for r in mag_rects)
+            min_mag_y = min(r.top() for r in mag_rects)
+            max_mag_x = max(r.right() for r in mag_rects)
+            max_mag_y = max(r.bottom() for r in mag_rects)
 
-        painter.drawLine(QPointF(ov_bx0, ov_by0), p_tl)
-        painter.drawLine(QPointF(ov_bx0, ov_by0 + ov_bh), p_bl)
-        painter.drawLine(QPointF(ov_bx0 + ov_bw, ov_by0), p_tr)
-        painter.drawLine(QPointF(ov_bx0 + ov_bw, ov_by0 + ov_bh), p_br)
+            def clamp_pt(px, py):
+                return QPointF(
+                    max(container_rect.left(), min(container_rect.right(), px)),
+                    max(container_rect.top(), min(container_rect.bottom(), py))
+                )
+
+            p_tl = clamp_pt(min_mag_x, min_mag_y)
+            p_bl = clamp_pt(min_mag_x, max_mag_y)
+            p_tr = clamp_pt(max_mag_x, min_mag_y)
+            p_br = clamp_pt(max_mag_x, max_mag_y)
+
+            painter.drawLine(QPointF(min_ov_x, min_ov_y), p_tl)
+            painter.drawLine(QPointF(min_ov_x, max_ov_y), p_bl)
+            painter.drawLine(QPointF(max_ov_x, min_ov_y), p_tr)
+            painter.drawLine(QPointF(max_ov_x, max_ov_y), p_br)
 
         painter.end()
 
@@ -371,7 +451,7 @@ class PACVisualLocatorWidget(QWidget):
     - Interactive Toolbar (Zoom, Context Padding, Finding Navigation)
     """
 
-    finding_navigation_requested = Signal(int)  # offset: -1 for prev, +1 for next
+    finding_navigation_requested = Signal(int)
     full_view_requested = Signal()
 
     def __init__(self, parent=None):
@@ -473,17 +553,12 @@ class PACVisualLocatorWidget(QWidget):
         finding: CheckResult,
         page_num: Optional[int] = None,
         bbox: Optional[Tuple[float, float, float, float]] = None,
-        doc_model: Optional[PDFDocumentModel] = None
+        doc_model: Optional[PDFDocumentModel] = None,
+        rects: Optional[List[Tuple[float, float, float, float]]] = None
     ):
         """Loads a CheckResult and immediately renders PAC visual locator."""
         self.current_finding = finding
         target_page = page_num or finding.page or 1
-        if bbox is not None:
-            target_bbox = bbox
-        elif finding.page is None or finding.page == target_page:
-            target_bbox = finding.bounding_box
-        else:
-            target_bbox = None
 
         # Format header title matching PAC
         title_text = finding.message or finding.name
@@ -491,17 +566,13 @@ class PACVisualLocatorWidget(QWidget):
 
         # Update badges
         status_val = finding.status.value if hasattr(finding.status, "value") else str(finding.status)
-        self.lbl_badge_status.setText(status_val)
-        if status_val in ("FAIL", "ERROR"):
-            self.lbl_badge_status.setStyleSheet("background: #fee2e2; color: #991b1b; font-weight: 700; padding: 3px 8px; border-radius: 4px; font-size: 11px;")
-        elif status_val == "WARNING":
-            self.lbl_badge_status.setStyleSheet("background: #fef3c7; color: #92400e; font-weight: 700; padding: 3px 8px; border-radius: 4px; font-size: 11px;")
-        else:
-            self.lbl_badge_status.setStyleSheet("background: #dcfce7; color: #166534; font-weight: 700; padding: 3px 8px; border-radius: 4px; font-size: 11px;")
+        self.lbl_badge_status.setText(f" {status_val} ")
+        status_css = StatusColors.get_status_css(finding.status, border_radius=4, padding="3px 8px", font_size=11, font_weight=700)
+        self.lbl_badge_status.setStyleSheet(status_css)
 
         self.lbl_badge_rule.setText(f"{finding.standard} • {finding.check_id}")
 
-        self.canvas.set_data(doc, target_page, target_bbox, finding, doc_model=doc_model)
+        self.canvas.set_data(doc, target_page, bbox, finding, doc_model=doc_model, rects=rects)
 
     def _zoom_in(self):
         self.canvas.set_zoom(self.canvas._zoom_level + 0.25)
@@ -542,4 +613,3 @@ class PACVisualLocatorDialog(QDialog):
         self.locator.full_view_requested.connect(self.accept)
 
         layout.addWidget(self.locator)
-

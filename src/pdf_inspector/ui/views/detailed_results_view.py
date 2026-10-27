@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QColor, QFont
 from ...core.models import CheckResult, CheckStatus, Severity
+from ..widgets.status_badge import StatusColors
 
 
 class DetailedResultsView(QWidget):
@@ -277,14 +278,8 @@ class DetailedResultsView(QWidget):
             status_text = r.status.value
             item_status = QTableWidgetItem(status_text)
             item_status.setTextAlignment(Qt.AlignCenter)
-            if r.status in (CheckStatus.FAIL, CheckStatus.ERROR):
-                item_status.setForeground(QColor("#dc2626"))
-            elif r.status == CheckStatus.WARNING:
-                item_status.setForeground(QColor("#b45309"))
-            elif r.status == CheckStatus.PASS:
-                item_status.setForeground(QColor("#166534"))
-            elif r.status == CheckStatus.MANUAL_REVIEW:
-                item_status.setForeground(QColor("#0369a1"))
+            item_status.setForeground(StatusColors.get_status_color(r.status))
+            item_status.setFont(QFont("Segoe UI", 9, QFont.Bold))
             self.table.setItem(row, 0, item_status)
 
             # Rule ID

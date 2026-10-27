@@ -178,10 +178,17 @@ class StructureTreeParser:
                 root_spanned.update(c.pages_spanned)
             root_node.pages_spanned = sorted(list(root_spanned))
 
-            # Ensure nodes with spanned pages have their primary page assigned
+            # Ensure nodes with spanned pages have their primary page assigned and inherit from parent
             for n in root_node.find_all_nodes():
                 if n.page is None and n.pages_spanned:
                     n.page = n.pages_spanned[0]
+                elif n.page is None and n.parent and n.parent.page:
+                    n.page = n.parent.page
+
+            # Post-pass: link MCID text and geometry for any nodes that received MCIDs from ParentTree or /K
+            for n in root_node.find_all_nodes():
+                if n.mcids and not n.bbox:
+                    self._link_mcid_data(n)
 
             return root_node
         except Exception as e:
@@ -190,13 +197,22 @@ class StructureTreeParser:
 
     def _parse_k(self, k_val: Any, parent_node: StructureNode):
         """Recursively parses the /K entry."""
-        if isinstance(k_val, pikepdf.Array):
+        if k_val is None:
+            return
+        if isinstance(k_val, (pikepdf.Array, list, tuple)):
             for item in k_val:
                 self._parse_k_item(item, parent_node)
         else:
             self._parse_k_item(k_val, parent_node)
 
     def _parse_k_item(self, item: Any, parent_node: StructureNode):
+        if item is None:
+            return
+        if isinstance(item, (pikepdf.Array, list, tuple)):
+            for sub_item in item:
+                self._parse_k_item(sub_item, parent_node)
+            return
+
         if isinstance(item, pikepdf.Dictionary):
             elem_type = str(item.get("/Type", ""))
             if elem_type == "/MCR":
@@ -438,6 +454,15 @@ class StructureTreeParser:
                 return self.page_map[pg_obj.objgen]
             if hasattr(pg_obj, "objgen") and pg_obj.objgen[0] in self.page_map:
                 return self.page_map[pg_obj.objgen[0]]
+            if isinstance(pg_obj, (pikepdf.Array, list, tuple)) and len(pg_obj) >= 2:
+                try:
+                    gen_pair = (int(pg_obj[0]), int(pg_obj[1]))
+                    if gen_pair in self.page_map:
+                        return self.page_map[gen_pair]
+                    if gen_pair[0] in self.page_map:
+                        return self.page_map[gen_pair[0]]
+                except Exception:
+                    pass
             # Also try direct object ref id
             if id(pg_obj) in self.page_map:
                 return self.page_map[id(pg_obj)]

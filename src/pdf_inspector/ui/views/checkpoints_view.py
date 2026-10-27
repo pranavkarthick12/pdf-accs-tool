@@ -18,6 +18,7 @@ from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QIcon, QColor, QFont, QPixmap, QImage
 from ...core.models import AuditReport, PDFDocumentModel, CheckStatus
 from ...engine.wcag.wcag_meta import WCAG_GUIDELINE_META
+from ..widgets.status_badge import StatusColors
 
 
 class CheckpointTableWidget(QTableWidget):
@@ -100,10 +101,10 @@ class CheckpointTableWidget(QTableWidget):
             if item_p:
                 item_p.setText(str(p) if p > 0 else "-")
                 if p > 0:
-                    item_p.setForeground(QColor("#166534"))
+                    item_p.setForeground(StatusColors.get_status_color(CheckStatus.PASS))
                     item_p.setFont(QFont("Segoe UI", 10, QFont.Bold))
                 else:
-                    item_p.setForeground(QColor("#6b7280"))
+                    item_p.setForeground(QColor("#94a3b8"))
                     item_p.setFont(QFont("Segoe UI", 10))
 
             # Warned column
@@ -111,10 +112,10 @@ class CheckpointTableWidget(QTableWidget):
             if item_w:
                 item_w.setText(str(w) if w > 0 else "-")
                 if w > 0:
-                    item_w.setForeground(QColor("#b45309"))
+                    item_w.setForeground(StatusColors.get_status_color(CheckStatus.WARNING))
                     item_w.setFont(QFont("Segoe UI", 10, QFont.Bold))
                 else:
-                    item_w.setForeground(QColor("#6b7280"))
+                    item_w.setForeground(QColor("#94a3b8"))
                     item_w.setFont(QFont("Segoe UI", 10))
 
             # Failed column
@@ -122,10 +123,10 @@ class CheckpointTableWidget(QTableWidget):
             if item_f:
                 item_f.setText(str(f) if f > 0 else "-")
                 if f > 0:
-                    item_f.setForeground(QColor("#dc2626"))
+                    item_f.setForeground(StatusColors.get_status_color(CheckStatus.FAIL))
                     item_f.setFont(QFont("Segoe UI", 10, QFont.Bold))
                 else:
-                    item_f.setForeground(QColor("#6b7280"))
+                    item_f.setForeground(QColor("#94a3b8"))
                     item_f.setFont(QFont("Segoe UI", 10))
 
     def _on_row_click(self, row: int, col: int):
@@ -474,7 +475,7 @@ class CheckpointsView(QWidget):
         pdfua_failed = sum(c.get("failed", 0) for c in pdfua_counts.values())
         if pdfua_failed > 0:
             self.lbl_pdfua_banner.setText("This PDF file is not PDF/UA compliant.")
-            self.lbl_pdfua_banner.setStyleSheet("font-size: 13px; font-weight: bold; color: #1e293b; padding: 4px 2px;")
+            self.lbl_pdfua_banner.setStyleSheet("font-size: 13px; font-weight: bold; color: #b91c1c; padding: 4px 2px;")
         else:
             self.lbl_pdfua_banner.setText("This PDF file is PDF/UA compliant.")
             self.lbl_pdfua_banner.setStyleSheet("font-size: 13px; font-weight: bold; color: #15803d; padding: 4px 2px;")

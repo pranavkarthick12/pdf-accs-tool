@@ -35,29 +35,33 @@ class Sidebar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("leftSidebar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._init_ui()
 
     def _init_ui(self):
-        self.setMinimumWidth(200)
-        self.setMaximumWidth(260)
-        self.setStyleSheet("""
-            Sidebar {
-                background-color: #ffffff;
-                border-right: 1px solid #e2e8f0;
-            }
-        """)
+        self.setMinimumWidth(220)
+        self.setMaximumWidth(280)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 10, 6, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
+        # Header section
         lbl_section = QLabel("NAVIGATION")
-        lbl_section.setStyleSheet("font-size: 11px; font-weight: 700; color: #94a3b8; padding-left: 12px; letter-spacing: 0.5px;")
+        lbl_section.setObjectName("sidebarHeaderLabel")
         layout.addWidget(lbl_section)
+
+        divider = QFrame()
+        divider.setObjectName("sidebarDivider")
+        divider.setFrameShape(QFrame.HLine)
+        layout.addWidget(divider)
 
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("sidebarList")
         self.list_widget.setFrameShape(QFrame.NoFrame)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
 
         for key, label in self.NAV_ITEMS:
             item = QListWidgetItem(label)
